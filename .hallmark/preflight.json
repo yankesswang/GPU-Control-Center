@@ -1,0 +1,26 @@
+{
+  "date": "2026-11-27",
+  "framework": "React 19 + TypeScript + Vite 6",
+  "font_stack": "system-ui, Noto Sans TC; ui-monospace for data",
+  "palette": "forest green accent and sidebar, light gray main surface",
+  "motion": "CSS only; no motion library",
+  "spacing": "mixed hard-coded values; no named scale",
+  "sources": [
+    "frontend/package.json:1",
+    "frontend/src/style.css:1",
+    "frontend/src/main.tsx:1"
+  ],
+  "preserve": [
+    "product name",
+    "four views",
+    "API endpoints",
+    "real GPU metrics and inference flow"
+  ],
+  "proposed": [
+    "shared semantic tokens",
+    "clearer type scale",
+    "compact GPU rows",
+    "readable task output",
+    "responsive navigation"
+  ]
+}

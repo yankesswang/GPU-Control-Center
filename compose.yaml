@@ -50,7 +50,9 @@ services:
         condition: service_healthy
     restart: unless-stopped
   web:
-    build: ./frontend
+    build:
+      context: .
+      dockerfile: frontend/Dockerfile
     ports:
       - "127.0.0.1:${WEB_PORT:-5180}:80"
     depends_on:

@@ -1,124 +1,194 @@
 import React, {useCallback, useEffect, useRef, useState} from 'react';
 import {createRoot} from 'react-dom/client';
+import {
+  Pulse, IconContext, ArrowClockwise, BookOpen, Check, CircleNotch, Copy, Cpu,
+  DesktopTower, Gauge, GitBranch, Info, Lightning, ListBullets, Plus,
+  Queue, Stack, WarningCircle, X,
+} from '@phosphor-icons/react';
+import '@fontsource/ibm-plex-sans/400.css';
+import '@fontsource/ibm-plex-sans/500.css';
+import '@fontsource/ibm-plex-sans/600.css';
+import '@fontsource/ibm-plex-mono/400.css';
+import '@fontsource/ibm-plex-mono/500.css';
 import {api, type Job, type Model, type Node, type Overview, type Explanation} from './api';
+import {HardwarePanel, SlotPanel} from './components/HardwarePanel';
+import {JobsPanel, Progress} from './components/JobsPanel';
+import {Badge, Empty, Skeleton, time} from './components/ui';
 import './style.css';
+import '../../tokens.css';
+import './console.css';
 
-const labels: Record<string, string> = {queued:'排隊中', running:'執行中', completed:'已完成', failed:'失敗', cancelled:'已取消', cancelling:'取消中', unknown:'待確認', online:'在線', offline:'離線', maintenance:'維護中'};
+const pages = [
+  {id:'overview', title:'運算總覽', short:'總覽', icon:Gauge, description:'掌握硬體負載與任務狀態，安排下一次推論。'},
+  {id:'jobs', title:'任務佇列', short:'任務', icon:Queue, description:'追蹤每個應用的工作，從排隊到生成完成。'},
+  {id:'nodes', title:'運算主機', short:'主機', icon:DesktopTower, description:'查看實際硬體數據、心跳與接單狀態。'},
+  {id:'models', title:'模型與能力', short:'模型', icon:Stack, description:'使用主機上已安裝的模型，透過中央入口提交工作。'},
+];
 const blockerLabels: Record<string,string> = {unsupported_capability:'不支援此能力',offline:'主機離線',maintenance:'維護中',unconfirmed_execution:'有執行狀態待確認的工作',slot_occupied:'工作槽已占用'};
-const time = (value: string) => new Date(value).toLocaleString('zh-TW', {hour12:false});
-function Status({value}: {value: string}) { return <span className={`status ${value}`}><span aria-hidden="true"/>{labels[value] || value}</span>; }
-function Meter({value, label}: {value: number; label: string}) {return <div className="meter" role="progressbar" aria-label={label} aria-valuenow={Math.round(value)} aria-valuemin={0} aria-valuemax={100}><i style={{width:`${Math.max(0,Math.min(100,value))}%`}}/></div>;}
-
-function JobProgress({job}: {job:Job}) {
-  if(job.model.startsWith('ollama:')) return <span className="generation-state">{job.status === 'completed' ? `${job.runtime_state.tokens_generated ?? 0} tokens` : job.status === 'running' ? (job.runtime_state.phase === 'loading' ? '載入模型中' : `生成中 · ${job.runtime_state.chunks_received ?? 0} 片段`) : labels[job.status]}</span>;
-  return <div className="progress-cell"><Meter value={job.progress} label={`${job.name} 進度`}/><span>{Math.round(job.progress)}%</span></div>;
-}
 
 function App() {
   const [page, setPage] = useState('overview');
-  const [data, setData] = useState<{nodes: Node[]; jobs: Job[]; models: Model[]; overview: Overview} | null>(null);
-  const [error, setError] = useState('');
-  const [actionError, setActionError] = useState('');
-  const [updated, setUpdated] = useState('');
-  const [creating, setCreating] = useState(false);
-  const [selected, setSelected] = useState<string | null>(null);
-  const [detail, setDetail] = useState<Job | null>(null);
-  const [explanation, setExplanation] = useState<Explanation | null>(null);
-  const [filter, setFilter] = useState('all');
-  const [query, setQuery] = useState('');
-  const [busy, setBusy] = useState(false);
+  const [data, setData] = useState<{nodes:Node[]; jobs:Job[]; models:Model[]; overview:Overview} | null>(null);
+  const [error,setError] = useState('');
+  const [actionError,setActionError] = useState('');
+  const [updated,setUpdated] = useState('');
+  const [creating,setCreating] = useState(false);
+  const [selected,setSelected] = useState<string|null>(null);
+  const [detail,setDetail] = useState<Job|null>(null);
+  const [explanation,setExplanation] = useState<Explanation|null>(null);
+  const [filter,setFilter] = useState('all');
+  const [query,setQuery] = useState('');
+  const [busy,setBusy] = useState(false);
+  const [manualRefresh,setManualRefresh] = useState(false);
   const refreshing = useRef(false);
   const refresh = useCallback(async () => {
-    if (refreshing.current) return;
+    if(refreshing.current) return;
     refreshing.current = true;
     try {
-      const [nodes, jobs, models, overview] = await Promise.all([api<Node[]>('/nodes'), api<Job[]>('/jobs'), api<Model[]>('/models'), api<Overview>('/overview')]);
-      setData({nodes, jobs, models, overview}); setError(''); setUpdated(new Date().toLocaleTimeString('zh-TW', {hour12:false}));
+      const [nodes,jobs,models,overview] = await Promise.all([api<Node[]>('/nodes'),api<Job[]>('/jobs'),api<Model[]>('/models'),api<Overview>('/overview')]);
+      setData({nodes,jobs,models,overview}); setError('');
+      setUpdated(new Date().toLocaleTimeString('zh-TW',{hour12:false}));
     } catch(e) {setError(e instanceof Error ? e.message : '無法連線到中央服務');}
     finally {refreshing.current = false;}
-  }, []);
-  useEffect(() => {void refresh(); const id = setInterval(() => void refresh(), 2000); return () => clearInterval(id);}, [refresh]);
+  },[]);
+  useEffect(() => {void refresh(); const id=setInterval(() => void refresh(),2000); return () => clearInterval(id);},[refresh]);
   useEffect(() => {
-    if (!selected) {setDetail(null); setExplanation(null); return;}
-    let current = true;
+    if(!selected) {setDetail(null); setExplanation(null); return;}
+    let current=true;
     setDetail(null); setExplanation(null);
-    const load = async () => {try {const [result, why] = await Promise.all([api<Job>(`/jobs/${selected}`), api<Explanation>(`/jobs/${selected}/explain`)]); if(current) {setDetail(result); setExplanation(why);}} catch(e) {if(current) setActionError(e instanceof Error ? e.message : '讀取失敗');}};
-    void load(); const id = setInterval(() => void load(), 2000);
-    return () => {current = false; clearInterval(id);};
-  }, [selected]);
-  async function action(path: string, method = 'POST', body?: unknown) {
-    setBusy(true); setActionError('');
-    try {const result = await api<Job>(path, method, body); await refresh(); if(path.endsWith('/retry')) setSelected(result.id); else if(selected && path.startsWith(`/jobs/${selected}/`)) setDetail(await api<Job>(`/jobs/${selected}`));}
-    catch(e) {setActionError(e instanceof Error ? e.message : '操作失敗');} finally {setBusy(false);}
-  }
-  const titles: Record<string, string> = {overview:'運算總覽', jobs:'任務佇列', nodes:'運算主機', models:'模型與能力'};
-  const counts = data?.overview.jobs || {};
-  const filtered = data?.jobs.filter(j => (filter === 'all' || j.status === filter) && `${j.name} ${j.source} ${j.id}`.toLowerCase().includes(query.toLowerCase())) || [];
-  return <div className="shell">
-    <aside className="sidebar"><a className="brand" href="#" onClick={() => setPage('overview')}><span className="brand-mark">GPU</span><span>Control Center<span className="brand-sub">GPU RESOURCE PLATFORM</span></span></a>
-      <p className="nav-label">工作空間</p><nav aria-label="主導覽">{Object.entries(titles).map(([key,title]) => <button key={key} className={page === key ? 'nav active' : 'nav'} onClick={() => {setPage(key); setSelected(null);}}><span className="nav-symbol" aria-hidden="true">{({overview:'◫',jobs:'≡',nodes:'▣',models:'◇'} as Record<string,string>)[key]}</span>{title}{key === 'jobs' && !!counts.queued && <b>{counts.queued}</b>}</button>)}</nav>
-      <div className="sidebar-bottom"><span className={`connection ${error ? 'disconnected' : ''}`}/><span>{error ? '中央服務連線中斷' : data ? '中央服務已連線' : '正在連線'}<small>本機開發環境 · v0.1</small></span></div>
-    </aside>
-    <main>
-      <header className="topbar"><span>工作空間 <span className="slash">/</span> <strong>{titles[page]}</strong></span><a href="/docs" target="_blank" rel="noreferrer">API 文件</a></header>
-      <div className="content"><div className="page-heading"><div><div className="eyebrow">GPU CONTROL CENTER</div><h1>{titles[page]}</h1><p>{page === 'overview' ? '集中掌握資源，讓每一個推論任務有序執行。' : page === 'jobs' ? '追蹤任務生命週期、進度與執行紀錄。' : page === 'nodes' ? '查看主機心跳、硬體狀態與接單能力。' : '讓應用透過一致的能力名稱提交工作。'}</p></div><button className="primary" onClick={() => setCreating(true)}>＋ 建立任務</button></div>
-      {error && <div className="alert" role="alert">中央服務暫時無法更新：{error}。正在自動重連。<button onClick={() => void refresh()}>重試連線</button></div>}
-      {actionError && <div className="alert" role="alert">{actionError}<button onClick={() => setActionError('')}>關閉</button></div>}
-      {!data && !error && <div className="empty">正在讀取主機與任務狀態…</div>}
-      {data && <>
-        {page === 'overview' && <><section className="stats" aria-label="平台統計">{[['在線主機',data.overview.online_nodes,'台可接單'],['執行任務',(counts.running || 0) + (counts.cancelling || 0),'個進行中'],['等待排程',counts.queued || 0,'個任務'],['累計完成',counts.completed || 0,'個已完成']].map(([label,value,hint]) => <div className="stat" key={label}><span>{label}</span><strong>{value}</strong><small>{hint}</small></div>)}</section>
-          <div className="notice"><span className="notice-label">{data.nodes.some(n => n.mode === "host" && n.status !== "offline") ? "真實主機" : "等待連線"}</span><span>主機 Agent 回報實際 GPU 狀態；選擇已安裝的 Ollama 模型即可提交真實推論。</span></div>
-          {(counts.unknown || 0) > 0 && <div className="alert">有 {counts.unknown} 個任務狀態待確認，已保留原主機執行槽並停止自動重派。</div>}
-        </>}
-        {(page === 'overview' || page === 'nodes') && <section className="panel"><div className="section-heading"><div><h2>運算資源</h2><p>{data.nodes.length} 台已登錄主機</p></div><span className="live">每 2 秒更新</span></div><div className="nodes-grid">{data.nodes.length ? data.nodes.map(node => <article className="node" key={node.id}><div className="node-head"><div><h3>{node.name}</h3><span className="mono">{node.mode === 'demo' ? 'SIMULATED WORKER' : 'HOST · OLLAMA'}</span></div><Status value={node.status}/></div><div className="hardware">{node.metrics.gpus?.length ? node.metrics.gpus.map((gpu,i) => <div key={i}><div className="hardware-title">{gpu.name}</div><div className="metric-label"><span>GPU 使用率</span><strong>{gpu.utilization}%</strong></div><Meter value={gpu.utilization} label="GPU 使用率"/><div className="metric-label"><span>顯存</span><strong>{(gpu.memory_used_mb/1024).toFixed(1)} / {(gpu.memory_total_mb/1024).toFixed(1)} GB</strong></div><Meter value={gpu.memory_used_mb/gpu.memory_total_mb*100} label="顯存使用率"/><div className="hardware-footer"><span>溫度 {gpu.temperature_c ?? '—'} °C</span><span>功耗 {gpu.power_w ?? '—'} W</span></div></div>) : <p className="muted">尚未偵測到 GPU</p>}</div><div className="cpu-row"><span>CPU <b>{node.metrics.cpu_percent ?? '—'}%</b></span><span>RAM <b>{node.metrics.ram_percent ?? '—'}%</b></span></div><div className="node-footer"><span>{node.mode === 'demo' ? '模擬資料' : '實際主機數據'}<small>心跳 {time(node.last_seen)}</small></span><button disabled={busy} onClick={() => void action(`/nodes/${node.id}/maintenance`, 'PATCH', {enabled:!node.maintenance})}>{node.maintenance ? '恢復接單' : '停止接單'}</button></div></article>) : <div className="empty">尚無主機連線。安裝並啟動主機 Agent 後，會自動出現在這裡。</div>}</div></section>}
-        {(page === 'overview' || page === 'jobs') && <section className="panel"><div className="section-heading"><div><h2>{page === 'overview' ? '最近任務' : '所有任務'}</h2><p>顯示最近 100 筆任務 · 依建立時間排序</p></div>{page === 'overview' && <button onClick={() => setPage('jobs')}>查看全部</button>}</div><div className="filters"><label className="search"><span>搜尋</span><input value={query} onChange={e => setQuery(e.target.value)} placeholder="任務名稱、來源或 ID"/></label><label><span className="sr-only">篩選狀態</span><select value={filter} onChange={e => setFilter(e.target.value)}><option value="all">所有狀態</option>{['queued','running','completed','cancelled','failed','unknown','cancelling'].map(s => <option value={s} key={s}>{labels[s]}</option>)}</select></label></div><div className="table-scroll"><table><thead><tr><th>任務名稱</th><th>來源 / 模型</th><th>狀態</th><th>進度</th><th>執行主機</th><th>建立時間</th></tr></thead><tbody>{filtered.slice(0,page === 'overview' ? 6 : 100).map(job => <tr key={job.id}><td><button className="job-link" onClick={() => setSelected(job.id)}>{job.name}</button><small className="mono">{job.id.slice(0,8)}</small></td><td>{job.source}<small>{job.model}</small></td><td><Status value={job.status}/></td><td><JobProgress job={job}/></td><td className="mono">{job.node_id || '等待分配'}</td><td className="date">{time(job.created_at)}</td></tr>)}</tbody></table>{!filtered.length && <div className="empty"><h3>{data.jobs.length ? '沒有符合條件的任務' : '任務佇列已就緒'}</h3><p>{data.jobs.length ? '請調整搜尋文字或狀態篩選。' : '選擇模型並輸入提示詞，開始第一個真實推論任務。'}</p>{!data.jobs.length && <button onClick={() => setCreating(true)}>建立第一個任務</button>}</div>}</div></section>}
-        {page === 'models' && <section className="panel"><div className="section-heading"><div><h2>已註冊能力</h2><p>由主機 Agent 發現的 Ollama 已安裝模型。</p></div></div>{data.models.map(model => <article className="model-row" key={model.id}><div><h3>{model.name}</h3><p>{model.description}</p><code>{model.id}</code></div><span className="tag">{model.runtime} · {model.available ? "可用" : "離線／維護"}</span></article>)}<div className="integration"><h3>接入真實主機</h3><p>主機 Agent 回報實際 CPU、RAM、NVIDIA GPU，並執行 Ollama 推論。中央目前以每主機一個工作槽協調經過平台的請求；Ollama 負責實際 GPU 選擇。</p></div></section>}
-        <footer className="page-footer"><span>PostgreSQL 持久化 · 中央派送 · Agent 回報</span><span>最後同步 {updated}</span></footer>
-      </>}
-      </div>
-    </main>
-    {creating && <CreateJob models={data?.models || []} onClose={() => setCreating(false)} onCreated={async id => {setCreating(false); setSelected(id); await refresh();}}/>}
-    {selected && <DetailPanel onClose={() => setSelected(null)}><div className="drawer-heading"><h2 id="detail-title">任務詳情</h2><button autoFocus aria-label="關閉任務詳情" onClick={() => setSelected(null)}>關閉</button></div>{detail ? <><h3 className="detail-name">{detail.name}</h3><Status value={detail.status}/><p className="mono detail-id">{detail.id}</p><JobProgress job={detail}/>{detail.model.startsWith("ollama:") && <><h3 className="output-heading">提示詞</h3><p className="prompt-text">{detail.parameters.prompt}</p><h3>生成內容</h3><div className="generated-text" aria-live="polite">{detail.runtime_state.text || (detail.status === "queued" ? "等待排程…" : "等待模型輸出…")}</div>{detail.status === "cancelling" && <p className="muted">已請求取消，等待本次生成結束並確認停止。</p>}</>}<dl><dt>來源</dt><dd>{detail.source}</dd><dt>模型能力</dt><dd>{detail.model}</dd><dt>執行主機</dt><dd>{detail.node_id || '等待分配'}</dd><dt>優先級</dt><dd>{detail.priority}</dd><dt>建立時間</dt><dd>{time(detail.created_at)}</dd></dl>{detail.error && <div className="alert">{detail.error}</div>}<div className="detail-actions">{['queued','running','unknown'].includes(detail.status) && <button disabled={busy} onClick={() => void action(`/jobs/${detail.id}/cancel`)}>取消任務</button>}{['failed','cancelled'].includes(detail.status) && <button disabled={busy} onClick={() => void action(`/jobs/${detail.id}/retry`)}>建立重試任務</button>}</div><h3>排程說明</h3>{explanation && <div className="schedule-explanation"><p>{explanation.summary}</p>{explanation.queue_rank !== null && <p>目前排序 {explanation.queue_rank} / {explanation.queue_size}（快照）</p>}{detail.status === "queued" && explanation.candidates.map(n => <div key={n.node_id}><strong>{n.name}</strong><p>{n.ready ? "可接單，等待輪詢" : n.blockers.map(b => (blockerLabels[b] || b)).join("、")}</p>{n.holders.map(h => <small key={h.id}>持有者：{h.source} · {h.name}</small>)}</div>)}</div>}<h3>執行紀錄</h3><ol className="timeline">{detail.events?.map(e => <li key={e.id}><small>{time(e.created_at)}</small><p>{e.message}</p></li>)}</ol>{detail.result && <><h3>執行結果</h3><pre>{JSON.stringify(detail.result,null,2)}</pre></>}</> : <p>讀取任務中…</p>}</DetailPanel>}
-    </div>;
-}
-
-function DetailPanel({onClose, children}: {onClose:()=>void; children: React.ReactNode}) {
-  const ref = useRef<HTMLDialogElement>(null);
-  useEffect(() => {ref.current?.showModal();}, []);
-  return <dialog ref={ref} className="drawer" aria-labelledby="detail-title" onCancel={onClose}>{children}</dialog>;
-}
-
-function CreateJob({models,onClose,onCreated}: {models:Model[]; onClose:()=>void; onCreated:(id:string)=>Promise<void>}) {
-  const [busy,setBusy] = useState(false);
-  const [error,setError] = useState('');
-  const [model,setModel] = useState(models.find(m => m.available)?.id || models[0]?.id || '');
-  const ref = useRef<HTMLDialogElement>(null);
-  useEffect(() => {ref.current?.showModal();},[]);
-  const demo = model === 'demo.progress';
-  async function submit(e: React.FormEvent<HTMLFormElement>) {
-    e.preventDefault(); setBusy(true); setError('');
-    const form = new FormData(e.currentTarget);
+    const load=async () => {
+      try {
+        const [result,why]=await Promise.all([api<Job>(`/jobs/${selected}`),api<Explanation>(`/jobs/${selected}/explain`)]);
+        if(current) {setDetail(result);setExplanation(why);}
+      } catch(e) {if(current) setActionError(e instanceof Error ? e.message : '讀取失敗');}
+    };
+    void load();const id=setInterval(() => void load(),2000);
+    return () => {current=false;clearInterval(id);};
+  },[selected]);
+  async function action(path:string,method='POST',body?:unknown) {
+    setBusy(true);setActionError('');
     try {
-      const job = await api<Job>('/jobs','POST', {
-        name:form.get('name'), source:form.get('source'), model,
-        prompt:demo ? '' : form.get('prompt'), max_tokens:demo ? 256 : Number(form.get('max_tokens')),
-        steps:demo ? Number(form.get('steps')) : 20, priority:Number(form.get('priority')),
-      });
-      await onCreated(job.id);
-    } catch(e) {setError(e instanceof Error ? e.message : '建立失敗'); setBusy(false);}
+      const result=await api<Job>(path,method,body);await refresh();
+      if(path.endsWith('/retry')) setSelected(result.id);
+      else if(selected && path.startsWith(`/jobs/${selected}/`)) setDetail(await api<Job>(`/jobs/${selected}`));
+    } catch(e) {setActionError(e instanceof Error ? e.message : '操作失敗');}
+    finally {setBusy(false);}
   }
-  return <dialog ref={ref} className="create-dialog" onCancel={onClose}><form onSubmit={e => void submit(e)}>
-    <div className="drawer-heading"><h2>建立推論任務</h2><button type="button" onClick={onClose} aria-label="關閉建立任務">關閉</button></div>
-    <p className="muted">由中央排程，交給主機上的 Ollama 執行。</p>
-    <label>任務名稱<input name="name" required maxLength={120} defaultValue="文字推論" autoFocus/></label>
-    <label>來源應用<input name="source" required maxLength={80} defaultValue="console"/></label>
-    <label>模型<select value={model} onChange={e => setModel(e.target.value)} required><option value="" disabled>選擇已安裝模型</option>{models.map(m => <option key={m.id} value={m.id}>{m.name} · {m.runtime}{m.available ? '' : '（目前無在線主機）'}</option>)}</select></label>
-    {!models.length && <div className="alert">尚無模型。請啟動主機 Agent，並在 Ollama 安裝模型。</div>}
-    {!demo && <label>提示詞<textarea name="prompt" rows={5} required maxLength={32000} placeholder="輸入你要模型處理的內容" defaultValue="請用繁體中文簡短介紹 GPU 排程的用途。"/></label>}
-    <div className="form-grid"><label>{demo ? '模擬步數' : '最大生成 tokens'}<input name={demo ? 'steps' : 'max_tokens'} type="number" min={demo ? 5 : 1} max={demo ? 120 : 2048} defaultValue={demo ? 20 : 256} required/></label><label>優先級（0–10）<input name="priority" type="number" min={0} max={10} defaultValue={0} required/></label></div>
-    <p className="form-hint">{demo ? '模擬工作，不執行 AI 推論。' : '真實模型生成長度不固定，畫面顯示輸出文字；完成後回報實際 token 數與速度。'}</p>
-    {error && <div className="alert" role="alert">{error}</div>}<div className="form-actions"><button type="button" onClick={onClose}>取消</button><button className="primary" disabled={busy || !model}>{busy ? '提交中…' : '開始推論'}</button></div>
+  const currentPage=pages.find(p => p.id===page)!;
+  const counts=data?.overview.jobs || {};
+  const availableModels=data?.models.filter(m => m.available).length || 0;
+  const gpuCount=data?.nodes.reduce((sum,n) => sum+(n.metrics.gpus?.length || 0),0) || 0;
+  function navigate(id:string) {setPage(id);setSelected(null);setActionError('');}
+  function openJob(id:string) {setSelected(id);setActionError('');}
+  const jobProps={jobs:data?.jobs || [],filter,query,setFilter,setQuery,onOpen:openJob,onAll:() => navigate('jobs'),onCreate:() => setCreating(true)};
+  return <div className="gcc gcc-shell">
+    <a className="gcc-skip" href="#main-content">跳至主要內容</a>
+    <aside className="gcc-sidebar">
+      <a className="gcc-brand" href="#" onClick={e => {e.preventDefault();navigate('overview');}} aria-label="GPU Control Center 首頁"><span className="gcc-brand-symbol"><Cpu size={25} weight="regular" /></span><span>GPU<span className="gcc-brand-name">Control Center</span></span></a>
+      <div className="gcc-workspace"><span className="gcc-workspace-mark"><DesktopTower size={17} /></span><div><strong>本機工作區</strong><span>Local infrastructure</span></div></div>
+      <p className="gcc-nav-label">工作空間</p>
+      <nav className="gcc-nav" aria-label="主導覽">{pages.map(p => <button key={p.id} aria-current={page===p.id ? 'page' : undefined} className={`gcc-nav-link${page===p.id ? ' is-active' : ''}`} onClick={() => navigate(p.id)}><p.icon size={20} /><span className="gcc-nav-full">{p.title}</span><span className="gcc-nav-short">{p.short}</span>{p.id==='jobs' && !!counts.queued && <b className="gcc-nav-count">{counts.queued}</b>}</button>)}</nav>
+      <div className="gcc-sidebar-resource"><span>已連線資源</span><div><strong>{data ? gpuCount : '—'}</strong><span>GPU 裝置</span></div><small>{data ? data.nodes.length : '—'} 台主機 · {availableModels} 個可用模型</small></div>
+      <div className="gcc-sidebar-bottom"><GitBranch size={17} /><span>本機部署<span>Ollama · MCP</span></span></div>
+    </aside>
+    <div className="gcc-work-area">
+      <header className="gcc-topbar"><div className="gcc-breadcrumb"><span>工作空間</span><span aria-hidden="true">/</span><strong>{currentPage.title}</strong></div><div className="gcc-topbar-actions"><span className={`gcc-live${error ? ' is-offline' : ''}`}><span aria-hidden="true" />{error ? '連線中斷' : data ? '即時同步' : '連線中'}</span><button className="gcc-icon-button" aria-label="重新整理資料" disabled={manualRefresh} onClick={async () => {setManualRefresh(true);await refresh();setManualRefresh(false);}}><ArrowClockwise size={18} className={manualRefresh ? 'gcc-spin' : ''} /></button><a className="gcc-doc-link" href="/docs" target="_blank" rel="noreferrer"><BookOpen size={17} /><span>API 文件</span></a></div></header>
+      <main id="main-content" className="gcc-content" tabIndex={-1}>
+        <div className="gcc-page-head"><div><h1>{currentPage.title}</h1><p>{currentPage.description}</p></div><button className="gcc-button gcc-button--primary" onClick={() => setCreating(true)}><Plus size={18} />建立任務</button></div>
+        {error && <div className="gcc-alert" role="alert"><WarningCircle size={20} /><div><strong>暫時無法更新資料</strong><p>{error}。{data ? '目前顯示最後一次收到的資料，正在自動重連。' : '正在自動重連。'}</p></div><button className="gcc-button gcc-button--quiet" onClick={() => void refresh()}>重試</button></div>}
+        {actionError && !selected && <div className="gcc-alert" role="alert"><WarningCircle size={20} /><p>{actionError}</p><button className="gcc-icon-button" aria-label="關閉錯誤訊息" onClick={() => setActionError('')}><X size={18} /></button></div>}
+        {!data && !error && <Skeleton rows={5} />}
+        {data && <>
+          {page==='overview' && <>
+            <section className="gcc-summary" aria-label="平台統計">{[
+              {label:'在線主機',value:data.overview.online_nodes,unit:'台',icon:DesktopTower},
+              {label:'執行中',value:(counts.running || 0)+(counts.cancelling || 0),unit:'個任務',icon:Pulse},
+              {label:'等待排程',value:counts.queued || 0,unit:'個任務',icon:Queue},
+              {label:'累計完成',value:counts.completed || 0,unit:'個任務',icon:Check},
+            ].map(stat => <div className="gcc-stat" key={stat.label}><span><stat.icon size={17} />{stat.label}</span><div><strong>{stat.value}</strong><span>{stat.unit}</span></div></div>)}</section>
+            {!!counts.unknown && <div className="gcc-alert" role="alert"><WarningCircle size={20} /><p>{counts.unknown} 個任務尚未確認停止，已保留原主機工作槽。</p><button className="gcc-button gcc-button--quiet" onClick={() => {navigate('jobs');setFilter('unknown');}}>查看任務</button></div>}
+            <div className="gcc-overview-grid"><HardwarePanel nodes={data.nodes} busy={busy} onMaintenance={node => void action(`/nodes/${node.id}/maintenance`,'PATCH',{enabled:!node.maintenance})} /><SlotPanel nodes={data.nodes} jobs={data.jobs} /></div>
+            <JobsPanel {...jobProps} compact />
+          </>}
+          {page==='jobs' && <JobsPanel {...jobProps} />}
+          {page==='nodes' && <HardwarePanel nodes={data.nodes} busy={busy} onMaintenance={node => void action(`/nodes/${node.id}/maintenance`,'PATCH',{enabled:!node.maintenance})} />}
+          {page==='models' && <section className="gcc-panel"><div className="gcc-panel-head"><div><h2>已安裝模型</h2><p>由主機 Agent 發現，直接使用現有 Ollama 模型。</p></div><span className="gcc-subtle">{availableModels} 個可用</span></div>{data.models.length ? data.models.map(model => <article className="gcc-model-row" key={model.id}><span className="gcc-model-symbol"><Stack size={23} /></span><div className="gcc-model-info"><h3>{model.name}</h3><code>{model.id}</code><p>{model.description}</p></div><div className="gcc-model-state"><Badge value={model.available ? 'online' : 'offline'} /><span>{model.runtime}</span></div><button className="gcc-button" onClick={() => setCreating(true)}>使用模型</button></article>) : <Empty icon={<Stack size={28} />} title="尚未發現模型">確認主機 Agent 已啟動，並在 Ollama 安裝模型。</Empty>}<div className="gcc-inline-note"><Info size={18} /><p>中央目前以每台主機一個工作槽排程，Ollama 負責實際 GPU 選擇。其他程序仍可能占用硬體資源。</p></div></section>}
+          <footer className="gcc-footer"><span><span className="gcc-keyline" />中央排程 · 原生 Agent · 真實推論</span><span>{error ? '最後成功同步' : '最後同步'} <time>{updated}</time></span></footer>
+        </>}
+      </main>
+    </div>
+    {creating && <CreateJob models={data?.models || []} onClose={() => setCreating(false)} onCreated={async id => {setCreating(false);openJob(id);await refresh();}} />}
+    {selected && <DetailPanel onClose={() => setSelected(null)}><div className="gcc-dialog-head"><span>任務詳情</span><button className="gcc-icon-button" aria-label="關閉任務詳情" onClick={() => setSelected(null)}><X size={21} /></button></div>{detail ? <JobDetails detail={detail} explanation={explanation} busy={busy} error={actionError} onAction={path => void action(path)} /> : actionError ? <div className="gcc-dialog-loading gcc-alert" role="alert">{actionError}</div> : <Skeleton rows={4} />}</DetailPanel>}
+  </div>;
+}
+
+function CopyButton({text,label='複製內容'}:{text:string;label?:string}) {
+  const [copied,setCopied]=useState(false);
+  const [failed,setFailed]=useState(false);
+  useEffect(() => {if(!copied) return;const id=setTimeout(() => setCopied(false),2000);return () => clearTimeout(id);},[copied]);
+  return <button className="gcc-button gcc-button--quiet" onClick={async () => {try {await navigator.clipboard.writeText(text);setCopied(true);setFailed(false);} catch {setFailed(true);}}}>{copied ? <Check size={16} /> : <Copy size={16} />}{copied ? '已複製' : failed ? '複製失敗，請手動選取' : label}</button>;
+}
+
+function JobDetails({detail,explanation,busy,error,onAction}:{detail:Job;explanation:Explanation|null;busy:boolean;error:string;onAction:(path:string)=>void}) {
+  const real=detail.model.startsWith('ollama:');
+  const output=detail.runtime_state.text || (typeof detail.result?.text==='string' ? detail.result.text : '');
+  return <>
+    <div className="gcc-detail-title"><div><h2 id="detail-title">{detail.name}</h2><p><code>{detail.id.slice(0,8)}</code><span>來自 {detail.source}</span></p></div><Badge value={detail.status} /></div>
+    {error && <div className="gcc-detail-error gcc-alert" role="alert"><WarningCircle size={20} /><p>{error}</p></div>}
+    <div className="gcc-detail-grid"><div className="gcc-detail-main">
+      {real && <><section className="gcc-output-section"><div className="gcc-output-head"><h3>生成內容</h3>{output && <CopyButton text={output} />}</div><div className={`gcc-output${output ? '' : ' is-empty'}`} aria-label="生成內容">{output || (detail.status==='queued' ? '等待中央派送後開始生成。' : detail.status==='cancelled' ? '任務已取消。' : detail.status==='failed' ? '本次推論未產生內容。' : '模型準備中，文字會顯示在這裡。')}</div><div className="gcc-output-meta"><Progress job={detail} />{typeof detail.result?.tokens_per_second==='number' && <span>{detail.result.tokens_per_second.toFixed(1)} tokens/s</span>}</div></section><section className="gcc-prompt-section"><h3>提示詞</h3><p>{detail.parameters.prompt}</p></section></>}
+      {!real && <div className="gcc-inline-note"><Info size={18} /><p>這是模擬工作，沒有執行 AI 推論。</p></div>}
+      <details className="gcc-disclosure" open={['queued','unknown','cancelling','failed'].includes(detail.status)}><summary><ListBullets size={18} />排程說明</summary><div>{explanation ? <><p>{explanation.summary}</p>{explanation.queue_rank !== null && <p className="gcc-muted">目前排序 {explanation.queue_rank} / {explanation.queue_size}（即時快照）</p>}{detail.status==='queued' && explanation.candidates.map(n => <div className="gcc-candidate" key={n.node_id}><strong>{n.name}</strong><p>{n.ready ? '可接單，等待 Agent 輪詢' : n.blockers.map(b => blockerLabels[b] || b).join('、')}</p>{n.holders.map(h => <p className="gcc-muted" key={h.id}>目前持有者：{h.source} · {h.name}</p>)}</div>)}</> : <p className="gcc-muted">正在讀取排程狀態…</p>}</div></details>
+      <details className="gcc-disclosure"><summary><Pulse size={18} />執行紀錄 <span>{detail.events?.length || 0}</span></summary><ol className="gcc-timeline">{detail.events?.map(e => <li key={e.id}><time dateTime={e.created_at}>{time(e.created_at)}</time><p>{e.message}</p></li>)}</ol></details>
+      {detail.result && <details className="gcc-disclosure gcc-raw"><summary><GitBranch size={18} />原始回應</summary><pre>{JSON.stringify(detail.result,null,2)}</pre></details>}
+    </div><aside className="gcc-detail-aside"><h3>執行資訊</h3><dl><dt>模型</dt><dd>{detail.model.replace('ollama:','')}</dd><dt>來源應用</dt><dd>{detail.source}</dd><dt>執行主機</dt><dd>{detail.node_id || '等待分配'}</dd><dt>優先級</dt><dd>{detail.priority}</dd><dt>建立時間</dt><dd>{time(detail.created_at)}</dd>{detail.finished_at && <><dt>完成時間</dt><dd>{time(detail.finished_at)}</dd></>}</dl>
+      {detail.error && <div className="gcc-alert"><WarningCircle size={18} /><p>{detail.error}</p></div>}
+      {['queued','running','unknown'].includes(detail.status) && <button className="gcc-button gcc-button--danger" disabled={busy} onClick={() => onAction(`/jobs/${detail.id}/cancel`)}>{busy ? <CircleNotch size={17} className="gcc-spin" /> : <X size={17} />}取消任務</button>}
+      {['failed','cancelled'].includes(detail.status) && <button className="gcc-button" disabled={busy} onClick={() => onAction(`/jobs/${detail.id}/retry`)}><ArrowClockwise size={17} />建立重試任務</button>}
+      {detail.status==='cancelling' && <p className="gcc-cancel-note" role="status">已請求取消，等待本次生成結束並確認停止。</p>}
+      {real && <p className="gcc-detail-note"><Info size={16} />生成長度不固定。完成後會回報實際 token 數。</p>}
+    </aside></div>
+  </>;
+}
+
+function DetailPanel({onClose,children}:{onClose:()=>void;children:React.ReactNode}) {
+  const ref=useRef<HTMLDialogElement>(null);
+  useEffect(() => {const dialog=ref.current;dialog?.showModal();return () => dialog?.close();},[]);
+  return <dialog ref={ref} className="gcc-dialog gcc-detail-dialog" aria-labelledby="detail-title" onCancel={onClose} onClick={e => {if(e.target===e.currentTarget) {const box=e.currentTarget.getBoundingClientRect();if(e.clientX<box.left || e.clientX>box.right || e.clientY<box.top || e.clientY>box.bottom) onClose();}}}>{children}</dialog>;
+}
+
+function CreateJob({models,onClose,onCreated}:{models:Model[];onClose:()=>void;onCreated:(id:string)=>Promise<void>}) {
+  const [busy,setBusy]=useState(false);
+  const [error,setError]=useState('');
+  const [model,setModel]=useState(models.find(m => m.available)?.id || models[0]?.id || '');
+  const [name,setName]=useState('文字推論');
+  const [source,setSource]=useState('console');
+  const [prompt,setPrompt]=useState('');
+  const [maxTokens,setMaxTokens]=useState('256');
+  const [priority,setPriority]=useState('0');
+  const [steps,setSteps]=useState('20');
+  const [promptTouched,setPromptTouched]=useState(false);
+  const ref=useRef<HTMLDialogElement>(null);
+  useEffect(() => {const dialog=ref.current;dialog?.showModal();return () => dialog?.close();},[]);
+  const demo=model==='demo.progress';
+  const promptError=!demo && promptTouched && !prompt.trim() ? '請輸入提示詞，模型才能開始生成。' : '';
+  async function submit(e:React.FormEvent<HTMLFormElement>) {
+    e.preventDefault();setPromptTouched(true);
+    if(!demo && !prompt.trim()) {ref.current?.querySelector('textarea')?.focus();return;}
+    setBusy(true);setError('');
+    try {const job=await api<Job>('/jobs','POST',{name:name.trim(),source:source.trim(),model,prompt:demo ? '' : prompt,max_tokens:demo ? 256 : Number(maxTokens),steps:demo ? Number(steps) : 20,priority:Number(priority)});await onCreated(job.id);}
+    catch(e) {setError(e instanceof Error ? e.message : '建立失敗，請稍後重試');setBusy(false);}
+  }
+  return <dialog ref={ref} className="gcc-dialog gcc-create-dialog" aria-labelledby="create-title" onCancel={e => {if(busy) e.preventDefault();else onClose();}}><form onSubmit={e => void submit(e)}>
+    <div className="gcc-dialog-head"><span><Plus size={18} />新增工作</span><button type="button" className="gcc-icon-button" aria-label="關閉建立任務" onClick={onClose} disabled={busy}><X size={21} /></button></div>
+    <div className="gcc-create-body"><h2 id="create-title">建立推論任務</h2><p className="gcc-create-description">選擇模型並輸入內容，由中央安排執行。</p>
+      <label className="gcc-field"><span>模型 <small>必填</small></span><select value={model} onChange={e => setModel(e.target.value)} required disabled={busy}><option value="" disabled>選擇已安裝模型</option>{models.map(m => <option key={m.id} value={m.id}>{m.name}{m.available ? '' : '（離線，可排隊）'}</option>)}</select><span className="gcc-field-help">{models.length ? '使用主機上已安裝的 Ollama 模型。' : '尚無模型。請確認 Agent 已連線，並在 Ollama 安裝模型。'}</span></label>
+      {!demo && <label className="gcc-field"><span>提示詞 <small>必填</small></span><textarea name="prompt" rows={6} value={prompt} onChange={e => setPrompt(e.target.value)} onBlur={() => setPromptTouched(true)} autoFocus required aria-invalid={!!promptError} aria-describedby="prompt-help" maxLength={32000} placeholder="例如：請用三點說明 GPU 排程的用途。" /><span id="prompt-help" className={`gcc-field-help${promptError ? ' is-error' : ''}`}>{promptError || '文字會逐步顯示在任務詳情中。'}</span></label>}
+      <label className="gcc-field gcc-token-field"><span>{demo ? '模擬步數' : '最大生成 tokens'}</span><input type="number" min={demo ? 5 : 1} max={demo ? 120 : 2048} value={demo ? steps : maxTokens} onChange={e => demo ? setSteps(e.target.value) : setMaxTokens(e.target.value)} required disabled={busy} /><span className="gcc-field-help">{demo ? '每一步約 0.5 秒，不執行 AI 推論。' : '生成上限 1–2048，實際長度由模型決定。'}</span></label>
+      <details className="gcc-disclosure gcc-advanced"><summary>進階設定</summary><div className="gcc-form-grid"><label className="gcc-field"><span>任務名稱</span><input value={name} onChange={e => setName(e.target.value)} required maxLength={120} disabled={busy} /></label><label className="gcc-field"><span>來源應用</span><input value={source} onChange={e => setSource(e.target.value)} required maxLength={80} disabled={busy} /></label><label className="gcc-field"><span>優先級（0–10）</span><input type="number" min={0} max={10} value={priority} onChange={e => setPriority(e.target.value)} required disabled={busy} /></label></div></details>
+      {error && <div className="gcc-alert" role="alert"><WarningCircle size={19} /><p>{error}</p></div>}
+    </div><div className="gcc-create-actions"><span><Lightning size={16} />{demo ? '模擬執行' : '真實推論'}</span><div><button type="button" className="gcc-button" onClick={onClose} disabled={busy}>取消</button><button className="gcc-button gcc-button--primary" disabled={busy || !model}>{busy ? <CircleNotch size={17} className="gcc-spin" /> : <Plus size={17} />}{busy ? '提交中' : '開始推論'}</button></div></div>
   </form></dialog>;
 }
 
-createRoot(document.getElementById('root')!).render(<React.StrictMode><App/></React.StrictMode>);
+createRoot(document.getElementById('root')!).render(<React.StrictMode><IconContext.Provider value={{weight:"regular", "aria-hidden":true}}><App/></IconContext.Provider></React.StrictMode>);

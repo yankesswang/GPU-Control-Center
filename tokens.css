@@ -1,0 +1,65 @@
+/* Hallmark · macrostructure: Workbench · tone: technical · anchor hue: green
+ * genre: modern-minimal · theme: approved dark console · design-system: design.md
+ * pre-emit critique: P4 H4 E4 S5 R4 V4 */
+:root {
+  color-scheme: dark;
+  --color-paper: oklch(16.5% 0.008 160);
+  --color-paper-2: oklch(20% 0.008 160);
+  --color-paper-3: oklch(24% 0.010 160);
+  --color-sidebar: oklch(14.5% 0.010 160);
+  --color-ink: oklch(95% 0.008 160);
+  --color-ink-2: oklch(83% 0.010 160);
+  --color-muted: oklch(71% 0.012 160);
+  --color-rule: oklch(31% 0.012 160);
+  --color-rule-2: oklch(40% 0.014 160);
+  --color-accent: oklch(81% 0.14 155);
+  --color-accent-hover: oklch(86% 0.12 155);
+  --color-accent-ink: oklch(18% 0.025 155);
+  --color-accent-soft: oklch(26% 0.035 155);
+  --color-focus: oklch(61% 0.14 250);
+  --color-success: oklch(81% 0.12 155);
+  --color-warning: oklch(85% 0.12 85);
+  --color-warning-soft: oklch(26% 0.025 85);
+  --color-error: oklch(79% 0.12 25);
+  --color-error-soft: oklch(26% 0.025 25);
+  --color-info: oklch(82% 0.09 240);
+  --color-info-soft: oklch(26% 0.025 240);
+  --color-overlay: oklch(9% 0.008 160 / 0.78);
+  --color-transparent: transparent;
+  --font-display: 'IBM Plex Mono', 'Noto Sans TC', monospace;
+  --font-body: 'IBM Plex Sans', 'Noto Sans TC', system-ui, sans-serif;
+  --font-mono: var(--font-display);
+  --font-outlier: var(--font-display);
+  --space-3xs: 0.25rem;
+  --space-2xs: 0.5rem;
+  --space-xs: 0.75rem;
+  --space-sm: 1rem;
+  --space-md: 1.5rem;
+  --space-lg: 2rem;
+  --space-xl: 3rem;
+  --space-2xl: 4rem;
+  --text-xs: 0.75rem;
+  --text-sm: 0.875rem;
+  --text-base: 1rem;
+  --text-xl: 1.5rem;
+  --text-2xl: 2rem;
+  --ease-out: cubic-bezier(0.16, 1, 0.3, 1);
+  --ease-in: cubic-bezier(0.7, 0, 0.84, 0);
+  --ease-in-out: cubic-bezier(0.65, 0, 0.35, 1);
+  --dur-micro: 100ms;
+  --dur-short: 180ms;
+  --dur-long: 260ms;
+  --radius-card: 12px;
+  --radius-input: 8px;
+  --radius-pill: 999px;
+  --rule-fine: 1px;
+  --rule-focus: 2px;
+  --size-control: 2.75rem;
+  --size-sidebar: 14.5rem;
+  --size-topbar: 4rem;
+  --z-header: 20;
+  --shadow-modal: 0 24px 100px oklch(8% 0.008 160 / 0.65);
+  --accent: var(--color-accent);
+  --border: var(--color-rule);
+  --muted: var(--color-muted);
+}

@@ -1,0 +1,18 @@
+[
+  {
+    "date": "2026-11-27",
+    "macrostructure": "Workbench",
+    "theme": "custom",
+    "theme_axes": "dark / mono plus sans / green",
+    "enrichment": "hardware telemetry SVG",
+    "brief": "Approved dark workbench with real GPU device visualization",
+    "critique": {
+      "P": 4,
+      "H": 4,
+      "E": 4,
+      "S": 5,
+      "R": 4,
+      "V": 4
+    }
+  }
+]
