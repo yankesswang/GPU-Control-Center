@@ -9,7 +9,7 @@ import time
 
 import httpx
 import psutil
-from .runtimes import discover_ollama, generate_ollama, ExecutionUncertain
+from .runtimes import discover_ollama, resident_ollama, generate_ollama, ExecutionUncertain
 
 logging.basicConfig(level=logging.INFO, format='%(asctime)s %(levelname)s %(message)s')
 log = logging.getLogger('agent')
@@ -61,6 +61,7 @@ def main():
                             metrics['ollama'] = {'status': 'online', 'models': len(catalog)}
                         except (httpx.HTTPError, ValueError, KeyError):
                             metrics['ollama'] = {'status': 'offline', 'models': 0}
+                        metrics['ollama'].update(resident_ollama(runtime))
                         capabilities = [m['id'] for m in catalog]
                     central.put(f'/api/agent/nodes/{node_id}', json={'name': node_id, 'mode': args.mode, 'capabilities': capabilities, 'model_catalog': catalog, 'metrics': metrics}).raise_for_status()
                 except Exception as exc:

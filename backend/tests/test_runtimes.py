@@ -3,9 +3,40 @@ import json
 
 import httpx
 import pytest
-from app.runtimes import generate_ollama, ExecutionUncertain
+from app.runtimes import generate_ollama, resident_ollama, ExecutionUncertain
 
 JOB = {'model':'ollama:test', 'parameters':{'prompt':'Hello', 'max_tokens':8}}
+
+
+def test_residency_reports_models_loaded_outside_central_jobs():
+    def handler(request):
+        assert request.url.path == '/api/ps'
+        return httpx.Response(200, json={'models': [
+            {'name': 'external-model:latest', 'size': 8192, 'size_vram': 4096},
+            {'model': 'cpu-model:latest', 'size': 2048, 'size_vram': 0},
+        ]})
+    with httpx.Client(base_url='http://ollama.test', transport=httpx.MockTransport(handler)) as client:
+        state = resident_ollama(client)
+    assert state['loaded_models_status'] == 'online'
+    assert state['loaded_models'] == [
+        {'name': 'external-model:latest', 'size_bytes': 8192, 'vram_bytes': 4096},
+        {'name': 'cpu-model:latest', 'size_bytes': 2048, 'vram_bytes': 0},
+    ]
+
+
+@pytest.mark.parametrize('payload', [{}, {'models': None}, {'models': [{}]}])
+def test_invalid_residency_is_unknown_instead_of_empty(payload):
+    with httpx.Client(base_url='http://ollama.test', transport=httpx.MockTransport(lambda r: httpx.Response(200, json=payload))) as client:
+        assert resident_ollama(client) == {'loaded_models_status': 'unavailable', 'loaded_models': None}
+
+
+def test_empty_residency_and_unreachable_runtime_are_distinct():
+    with runtime([]) as client:
+        assert resident_ollama(client) == {'loaded_models_status': 'online', 'loaded_models': []}
+    def handler(request):
+        raise httpx.ConnectError('offline', request=request)
+    with httpx.Client(base_url='http://ollama.test', transport=httpx.MockTransport(handler)) as client:
+        assert resident_ollama(client) == {'loaded_models_status': 'unavailable', 'loaded_models': None}
 
 
 def runtime(parts, inventory=None):

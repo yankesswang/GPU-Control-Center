@@ -22,6 +22,30 @@ def discover_ollama(client):
     return specs
 
 
+def resident_ollama(client):
+    """Report runtime residency separately from the installed model catalog."""
+    try:
+        response = client.get('/api/ps')
+        response.raise_for_status()
+        payload = response.json()
+        models = payload['models']
+        if not isinstance(models, list):
+            raise ValueError('Invalid resident model list')
+        loaded = []
+        for model in models:
+            name = model.get('name') or model.get('model')
+            if not isinstance(name, str) or not name:
+                raise ValueError('Invalid resident model name')
+            def byte_count(key):
+                value = model.get(key)
+                return value if isinstance(value, (int, float)) and not isinstance(value, bool) and value >= 0 else None
+            loaded.append(dict(name=name, size_bytes=byte_count('size'), vram_bytes=byte_count('size_vram')))
+        return {'loaded_models_status': 'online', 'loaded_models': loaded}
+    except (httpx.HTTPError, ValueError, KeyError, TypeError, AttributeError):
+        # Unreachable or invalid inventory must not look like an empty runtime.
+        return {'loaded_models_status': 'unavailable', 'loaded_models': None}
+
+
 def generate_ollama(client, job, report):
     model = job['model'].removeprefix('ollama:')
     parameters = job.get('parameters', {})

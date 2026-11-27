@@ -1,10 +1,21 @@
-import { Cpu, Database, DesktopTower, Lightning, Pause, Play, Thermometer, Queue, CheckCircle } from '@phosphor-icons/react';
+import { Cpu, Database, DesktopTower, Lightning, Pause, Play, Thermometer, Queue, CheckCircle, Stack } from '@phosphor-icons/react';
 import type { GPU, Job, Node } from '../api';
 import { Badge, Empty, time } from './ui';
 
 const valid = (value?: number | null): value is number => value != null && Number.isFinite(value);
 const percent = (value?: number | null) => valid(value) ? `${Math.round(value)}%` : '—';
 const memory = (value?: number | null) => valid(value) ? (value / 1024).toFixed(1) : '—';
+const residentMemory = (value?: number | null) => valid(value) ? `${(value / 1024**3).toFixed(2)} GiB` : '—';
+
+function LoadedModels({node}:{node:Node}) {
+  const runtime=node.metrics.ollama;
+  const known=runtime?.loaded_models_status==='online' && Array.isArray(runtime.loaded_models);
+  return <section className="gcc-loaded-models" aria-label={`${node.name} 已載入模型`}>
+    <div className="gcc-loaded-heading"><Stack size={22}/><div><h4>目前已載入模型</h4><p>{node.status==='offline' ? '主機離線 · 以下為最後回報狀態' : 'Ollama 即時回報 · 主機整體狀態'}</p></div>{known && <span className="gcc-badge">{runtime.loaded_models!.length} 個</span>}</div>
+    {node.mode==='demo' ? <p className="gcc-muted">模擬主機不提供真實模型載入狀態。</p> : !known ? <p className="gcc-muted">{runtime?.loaded_models_status==='unavailable' ? '暫時無法取得模型載入狀態，等待下次更新。' : '等待 Agent 回報模型載入狀態。'}</p> : runtime.loaded_models!.length===0 ? <p className="gcc-muted">目前沒有常駐模型，任務執行時會自動載入。</p> : <ul className="gcc-resident-list">{runtime.loaded_models!.map((model,i)=><li key={`${model.name}-${i}`}><strong>{model.name}</strong><span>GPU 顯存 <b>{residentMemory(model.vram_bytes)}</b></span><span>載入大小 <b>{residentMemory(model.size_bytes)}</b></span></li>)}</ul>}
+    <p className="gcc-loaded-note">顯示此 Ollama 服務的載入模型，可能包含其他應用使用的模型；不代表指定到某張 GPU。</p>
+  </section>;
+}
 
 function LoadRing({value,label,compact=false}:{value:number|null|undefined;label:string;compact?:boolean}) {
   const amount=valid(value) ? Math.max(0,Math.min(100,value)) : 0;
@@ -44,6 +55,7 @@ export function HardwarePanel({nodes,busy,onMaintenance}:{nodes:Node[];busy:bool
   return <section className="gcc-panel gcc-hardware-panel" aria-labelledby="hardware-title"><div className="gcc-panel-head"><div><h2 id="hardware-title">你的運算設備</h2><p>{nodes.length} 台主機 · {gpuCount} 張顯示卡</p></div><span className="gcc-subtle">每 2 秒更新</span></div>
     {!nodes.length ? <Empty icon={<DesktopTower size={32}/>} title="等待設備連線">啟動主機 Agent 後，硬體狀態會自動出現在這裡。</Empty> : nodes.map(node=><article className="gcc-host" key={node.id}>
       <div className="gcc-host-head"><div className="gcc-host-name"><span className="gcc-host-symbol"><DesktopTower size={25}/></span><div><h3>{node.name}</h3><p>{node.mode==='demo' ? '模擬設備' : '你的本機運算主機'}</p></div></div><Badge value={node.status}/></div>
+      <LoadedModels node={node}/>
       <div className="gcc-device-grid">{node.metrics.gpus?.length ? node.metrics.gpus.map((gpu,i)=><GpuDevice gpu={gpu} index={i} simulated={node.mode==='demo'} offline={node.status==='offline'} key={gpu.uuid || i}/>) : <p className="gcc-muted gcc-no-gpu">尚未偵測到顯示卡。</p>}</div>
       <div className="gcc-system-resources"><div className="gcc-system-resource"><span className="gcc-chip-visual"><Cpu size={34}/><span>{Array.from({length:9},(_,i)=><i key={i} className={valid(node.metrics.cpu_percent) && i/9*100<node.metrics.cpu_percent ? 'is-filled' : ''}/>)}</span></span><div><span>處理器 CPU</span><strong>{percent(node.metrics.cpu_percent)}<small>使用中</small></strong></div></div><div className="gcc-system-resource"><span className="gcc-ram-visual" aria-hidden="true">{Array.from({length:5},(_,i)=><i key={i} className={valid(node.metrics.ram_percent) && i/5*100<node.metrics.ram_percent ? 'is-filled' : ''}/>)}</span><div><span>系統記憶體</span><strong>{percent(node.metrics.ram_percent)}<small>{node.metrics.ram_total_gb ? `/ ${node.metrics.ram_total_gb} GB` : '使用中'}</small></strong></div></div></div>
       <div className="gcc-host-footer"><p className="gcc-heartbeat">{node.status==='offline' ? '顯示最後收到的數據' : '最後更新'} <time dateTime={node.last_seen}>{time(node.last_seen)}</time></p><button className="gcc-button gcc-button--quiet" disabled={busy} onClick={()=>onMaintenance(node)}>{node.maintenance ? <Play size={16}/> : <Pause size={16}/>}{node.maintenance ? '恢復接單' : '停止接單'}</button></div>

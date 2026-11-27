@@ -10,6 +10,10 @@ IBM Plex Sans 用於操作文字、IBM Plex Mono 用於數字與模型，中文�
 
 保留四個功能頁、API 與主機工作槽語意。硬體讀數包含其他程序，中央目前不能保證指定 GPU 或保留 VRAM。既有 style.css 保留，以 console.css 與 tokens.css 覆蓋。
 
+## Runtime model inventory
+
+設備圖卡上方顯示此主機 Ollama 服務的實際常駐模型，與已安裝模型清單分開。模型名稱可斷行，顯存與載入大小以 GiB 顯示。空清單、取得失敗、舊 Agent 尚未回報、主機離線快照各自標示。
+
 ## Validation
 
 Production TypeScript/Vite build、19 個 API 測試、MCP 真實推論 smoke 通過。GUI 實測新建推論並收到結果（212325e3，8 tokens）。已查看 1280px 桌面與 320/375/414/768px 響應式；搜尋空狀態、清除篩選、模型頁與 dialog 已檢查。
