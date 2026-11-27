@@ -1,0 +1,80 @@
+name: gpu-control-center
+services:
+  db:
+    image: postgres:17-alpine
+    environment:
+      POSTGRES_DB: ${POSTGRES_DB:-inference}
+      POSTGRES_USER: ${POSTGRES_USER:-inference}
+      POSTGRES_PASSWORD: ${POSTGRES_PASSWORD:?Run ./scripts/start.sh first}
+    ports:
+      - "127.0.0.1:${DB_PORT:-5440}:5432"
+    volumes:
+      - postgres_data:/var/lib/postgresql/data
+    healthcheck:
+      test: [CMD-SHELL, 'pg_isready -U "$${POSTGRES_USER}" -d "$${POSTGRES_DB}"']
+      interval: 3s
+      timeout: 3s
+      retries: 20
+    restart: unless-stopped
+  api:
+    build: ./backend
+    environment:
+      DB_HOST: db
+      DB_NAME: ${POSTGRES_DB:-inference}
+      DB_USER: ${POSTGRES_USER:-inference}
+      DB_PASSWORD: ${POSTGRES_PASSWORD:?Run ./scripts/start.sh first}
+      AGENT_TOKEN: ${AGENT_TOKEN:?Run ./scripts/start.sh first}
+    command: [sh, -c, "alembic upgrade head && uvicorn app.main:app --host 0.0.0.0 --port 8000"]
+    ports:
+      - "127.0.0.1:${API_PORT:-8088}:8000"
+    depends_on:
+      db:
+        condition: service_healthy
+    healthcheck:
+      test: [CMD, python, -c, "import urllib.request; urllib.request.urlopen('http://localhost:8000/health')"]
+      interval: 3s
+      timeout: 3s
+      retries: 30
+    restart: unless-stopped
+  demo-agent:
+    build: ./backend
+    environment:
+      API_URL: http://api:8000
+      AGENT_TOKEN: ${AGENT_TOKEN:?Run ./scripts/start.sh first}
+      NODE_ID: demo-worker-01
+    command: [python, -m, app.agent, --mode, demo]
+    depends_on:
+      api:
+        condition: service_healthy
+    restart: unless-stopped
+  web:
+    build: ./frontend
+    ports:
+      - "127.0.0.1:${WEB_PORT:-5180}:80"
+    depends_on:
+      api:
+        condition: service_healthy
+    healthcheck:
+      test: [CMD, wget, -q, --spider, http://127.0.0.1/]
+      interval: 5s
+      timeout: 3s
+      retries: 20
+    restart: unless-stopped
+  mcp:
+    build: ./backend
+    environment:
+      API_URL: http://api:8000
+    command: [python, -m, app.mcp_server]
+    ports:
+      - "127.0.0.1:${MCP_PORT:-8090}:8001"
+    depends_on:
+      api:
+        condition: service_healthy
+    healthcheck:
+      test: [CMD, python, -c, "import socket; s=socket.create_connection(('127.0.0.1',8001),3); s.close()"]
+      interval: 5s
+      timeout: 3s
+      retries: 20
+    restart: unless-stopped
+volumes:
+  postgres_data:
