@@ -9,6 +9,9 @@ class ExecutionUncertain(Exception):
     """The upstream may still be computing; do not release the central slot."""
 
 
+_UNSET = object()
+
+
 def discover_ollama(client):
     response = client.get('/api/tags')
     response.raise_for_status()
@@ -22,7 +25,30 @@ def discover_ollama(client):
     return specs
 
 
-def resident_ollama(client):
+def ollama_model_blob_path(client, model_name, cache=None):
+    """Resolve an Ollama model's GGUF blob path from `/api/show` for process matching."""
+    if cache is not None and model_name in cache:
+        return cache[model_name]
+    blob_path = None
+    try:
+        response = client.post('/api/show', json={'name': model_name}, timeout=3)
+        response.raise_for_status()
+        modelfile = response.json().get('modelfile') or ''
+        for line in modelfile.splitlines():
+            stripped = line.strip()
+            if stripped.startswith('FROM '):
+                candidate = stripped[5:].strip()
+                if candidate.startswith('/') or 'sha256-' in candidate:
+                    blob_path = candidate
+                    break
+    except (httpx.HTTPError, ValueError, TypeError, AttributeError):
+        blob_path = None
+    if cache is not None and blob_path:
+        cache[model_name] = blob_path
+    return blob_path
+
+
+def resident_ollama(client, *, gpu_processes=_UNSET, blob_cache=None, matched_pids=None):
     """Report runtime residency separately from the installed model catalog."""
     try:
         response = client.get('/api/ps')
@@ -40,6 +66,10 @@ def resident_ollama(client):
                 value = model.get(key)
                 return value if isinstance(value, (int, float)) and not isinstance(value, bool) and value >= 0 else None
             loaded.append(dict(name=name, size_bytes=byte_count('size'), vram_bytes=byte_count('size_vram')))
+        if gpu_processes is not _UNSET:
+            from .placement import attach_ollama_observations
+            blob_paths = {m['name']: p for m in loaded if (p := ollama_model_blob_path(client, m['name'], blob_cache))}
+            loaded = attach_ollama_observations(loaded, gpu_processes, blob_paths, matched_pids=matched_pids)
         return {'loaded_models_status': 'online', 'loaded_models': loaded}
     except (httpx.HTTPError, ValueError, KeyError, TypeError, AttributeError):
         # Unreachable or invalid inventory must not look like an empty runtime.

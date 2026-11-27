@@ -1,0 +1,20 @@
+[build-system]
+requires = ["setuptools>=68.0"]
+build-backend = "setuptools.build_meta"
+
+[project]
+name = "gpu-control-center-mcp"
+version = "0.2.0"
+description = "Standalone stdio-to-HTTP MCP bridge for connecting any agent system to GPU Control Center."
+readme = "README.md"
+requires-python = ">=3.10"
+dependencies = [
+    "mcp>=1.9.0,<2.0.0",
+    "httpx>=0.27.0",
+]
+
+[project.scripts]
+gpu-control-center-mcp = "gpu_control_center_mcp.cli:main"
+
+[tool.setuptools.packages.find]
+where = ["src"]
