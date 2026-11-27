@@ -1,132 +1,120 @@
 # GPU Control Center
 
-跨服務中央推論平台的可執行起點：React 管理介面、FastAPI 控制服務、PostgreSQL 持久化任務佇列，以及獨立 Agent。另提供 MCP 工具，與 GUI 共用同一套中央任務 API。
+多應用共用 GPU 的中央控制平台。React 管理介面、FastAPI、PostgreSQL、MCP，以及主機原生 Agent，已接通真實 Ollama 推論。
 
-## 一鍵啟動
+## 已可使用
 
-需求：Docker Engine、Docker Compose v2+、Python 3（首次產生本機設定）。主機不需要安裝 Node 或 Python 套件。
+- 主機實際 CPU、RAM、NVIDIA GPU 使用率／顯存／溫度／功耗。
+- 自動發現 Ollama 已安裝模型，從 GUI、HTTP API 或 MCP 提交提示詞。
+- 持久化排程、文字逐步更新、最終 token 數／速度與執行結果。
+- 優先級與等待時間排序、維護模式、等待原因及工作槽持有者查詢。
+- 取消排隊工作；執行中的 Ollama 工作等待確認生成結束與卸載後取消。
+- 網路中斷或執行狀態不確定時，保留工作槽，不自動重新派送。
+
+預設不啟動模擬 Agent。模型由你現有的 Ollama 執行，不會重新部署 Ollama 或搬動模型目錄。
+
+## 安裝與啟動
+
+需求：Docker、Docker Compose v2+、Python 3、[uv](https://docs.astral.sh/uv/)、Linux systemd user session，以及可連線的 Ollama。主機不用安裝 Node；前端在 Docker 的 Node 22 中建置。
 
 ```bash
-cd /home/trx50/Project/GPU-Control-Center
+git clone https://github.com/yankesswang/GPU-Control-Center.git
+cd GPU-Control-Center
 ./scripts/start.sh
 ```
 
-首次啟動會建立被 Git 忽略的 `.env`，自動產生資料庫密碼與 Agent token，建置映像、執行 Alembic migration，並等待服務健康檢查。
+首次執行會產生 `.env`、隨機資料庫密碼與 Agent token，建立資料庫 schema，等待四個容器健康檢查。
 
-| 服務 | 位址 |
+在 `.env` 設定你的 Ollama 位址，例如：
+
+```dotenv
+OLLAMA_URL=http://127.0.0.1:11434
+```
+
+本次實際安裝主機使用 `http://127.0.0.1:11435`，已設定於不進入 Git 的本機 `.env`。安裝原生 Agent：
+
+```bash
+./scripts/install-host-agent.sh
+```
+
+會在 `backend/.venv` 安裝 Python 依賴，註冊並啟動 user service `gpu-control-center-agent.service`。Agent 原生執行，能讀取主機 GPU 及 loopback Ollama，不需要把 Docker socket 掛給它。
+
+若 Ollama 尚無模型，可在其主機執行 `ollama pull qwen2.5:0.5b`，或呼叫該服務的 `/api/pull`。Agent 會在下一次心跳發現模型。此平台不會根據任務任意下載模型。
+
+| 服務 | 預設位址 |
 | --- | --- |
 | GUI | http://localhost:5180 |
 | API 文件 | http://localhost:8088/docs 或 http://localhost:5180/docs |
-| API 健康檢查 | http://localhost:8088/health |
+| 健康檢查 | http://localhost:8088/health |
 | MCP | http://localhost:8090/mcp（Streamable HTTP） |
-| PostgreSQL | localhost:5440；帳號與資料庫預設 `inference`，密碼見 `.env` |
+| PostgreSQL | localhost:5440，帳密見本機 `.env` |
 
-連接埠可在 `.env` 修改。資料庫存放於 Docker named volume，停止或重建容器後仍保留。
+## 開始推論
+
+在 GUI 按「建立任務」，選擇已安裝模型、輸入提示詞與最大生成 tokens。任務詳情顯示文字、來源應用、模型與排程紀錄。LLM 生成長度不固定，所以執行中不顯示虛構完成百分比。
+
+HTTP 範例（請先從 `GET /api/models` 確認模型 ID）：
 
 ```bash
-docker compose ps
+curl http://localhost:8088/api/jobs -H 'Content-Type: application/json' -d '{
+  "name": "文字推論",
+  "source": "my-app",
+  "model": "ollama:qwen2.5:0.5b",
+  "prompt": "請用繁體中文說明 GPU 排程的用途。",
+  "max_tokens": 128,
+  "priority": 0
+}'
+```
+
+回應 `id` 是任務 ID。使用 `GET /api/jobs/{id}` 查詢文字與結果、`GET /api/jobs/{id}/explain` 查排程說明、`POST /api/jobs/{id}/cancel` 取消。失敗或取消的任務可用 `POST /api/jobs/{id}/retry` 建立新的工作，保留原提示詞與參數。
+
+[MCP 接入方式與五個工具](docs/mcp.md)。
+
+## 啟停與檢查
+
+```bash
+./scripts/start.sh           # 啟動容器；若原生 Agent 已安裝，也會啟動它
+./scripts/stop.sh            # 正常停止原生 Agent 與此專案容器，保留資料庫
+make test                   # PostgreSQL schema 隔離測試與 adapter 邊界測試
+make test-mcp               # 真實 MCP → 中央 API → Ollama 端對端測試
+systemctl --user status gpu-control-center-agent.service
+journalctl --user -u gpu-control-center-agent.service -f
 docker compose logs -f --tail=100
-./scripts/stop.sh                # 正常停止，保留資料
-./scripts/start.sh              # 再次啟動
-make test                       # 在獨立 PostgreSQL schema 執行整合測試
 ```
 
-若主機的 Docker/AppArmor 出現 `cannot stop container: permission denied`，請先執行 `./scripts/stop.sh` 再重新啟動。此腳本僅操作此 Compose 專案，從服務內正常關閉程序，並保留資料庫 volume。此主機已遇到此問題，因此也提供 `make down` 使用同一腳本。
+修改 Agent 程式後用 `systemctl --user restart gpu-control-center-agent.service` 載入新程式。修改 `.env` 的 Ollama 位址後也需重啟 Agent。若修改 API 連接埠，重新執行安裝腳本更新 unit。
 
-本機管理版的 GUI／管理 API 尚無使用者登入，所有對主機公開的連接埠均綁定 `127.0.0.1`。目前供本機開發使用；跨網段正式部署前需加入管理者認證、TLS 與逐節點身分驗證。Agent API 目前使用共用 token。
+這台主機曾出現 Docker daemon 無法直接送出停止訊號的問題；`stop.sh` 從服務內正常關閉程序，僅操作本專案，不會重啟共用 Docker daemon。
 
-## 目前能做什麼
+## 執行與資源邊界
 
-- 主機總覽、每兩秒更新狀態、維護模式（停止新接單，既有任務繼續）。
-- 建立模擬工作、依優先級與等待時間排程、進度與事件紀錄、結果保存。
-- 排隊任務立即取消；執行中任務由 Agent 確認停止後取消。
-- 已確認失敗或取消的任務可以建立新的重試任務，保留原紀錄。
-- Agent 定期心跳；超過 20 秒未回報即顯示離線。
-- 使用 PostgreSQL row lock 與 `SKIP LOCKED`，避免同一任務被兩台主機領取；每台主機一個工作槽。
-- 任務回報攜帶 `attempt_id`；租約 30 秒，回報時續租。過期任務進入 `unknown`，保留該節點工作槽，不自動重派。原 Agent 可確認完成／停止；Agent 遺失時需人工核實後處理資料庫，目前沒有強制釋放按鈕。
+目前每個主機只有一個受管理的工作槽，即使有多張 GPU 也會序列化本平台的請求。Ollama 自己選擇 GPU；這版尚未提供每卡放置或顯存硬性預留。主機圖表是整台主機的數據，包含其他程序。
 
-**預設的 `demo-agent` 不執行 AI 推論。它使用明確標記的模擬硬體資料，並執行 `demo.progress` 步驟工作，驗證 API → 排程 → Agent → 進度 → PostgreSQL 的流程。**
+本平台只協調經過中央 API 的請求。其他應用若直接打 Ollama 或 ComfyUI，仍可能競爭 GPU。尚未接通 ComfyUI 執行器，不會停止既有 ComfyUI 工作或任意卸載其他服務。
 
-真正的模型推論、模型下載／載入、GPU 資源預留、LLM 串流、細粒度 GPU 排程、多租戶配額與高可用控制平面尚未實作。
+每次 Ollama 請求使用 `keep_alive=0`，完成後檢查 `/api/ps`，確認本次模型不再常駐後才釋放工作槽。若模型仍被其他 client 使用、連線中斷或收不到 done，任務會進入 `unknown`；保留工作槽等待人工確認，不會把不確定的執行當作已停止。
 
-## 結構與資料流
+執行中取消是「等待本次生成結束並確認卸載」，不是任意中斷 GPU kernel。最大生成長度 2048 tokens，context 設為 2048；長提示詞可能受 Ollama context 限制。
+
+若 Agent 重啟時有未完成任務，中央會保留待確認狀態。此版沒有強制清空工作槽按鈕，需確認遠端已停止後人工處理。
+
+目前 GUI／管理 API 沒有使用者登入，MCP 沒有 OAuth；公開到主機的連接埠綁定 `127.0.0.1`，供本機使用。Agent API 使用共用 token。不要將此開發版直接公開到網際網路。
+
+## 開發結構
 
 ```text
-frontend/                  React + TypeScript + Vite；Nginx 同源代理 /api
-backend/app/main.py        管理 API、Agent API、中央領取規則、租約檢查
-backend/app/agent.py       主動連線 Agent：demo 執行或 host 監控
-backend/app/models.py      Node / Job / Event
-backend/migrations/        Alembic 版本化 schema
-backend/tests/             PostgreSQL 整合測試（獨立暫存 schema）
-compose.yaml               web / api / db / demo-agent / mcp
-scripts/start.sh            設定產生、建置、migration、健康檢查
+frontend/                     React + TypeScript + Vite，Nginx 同源代理
+backend/app/main.py           中央排程、任務狀態、Agent API、等待說明
+backend/app/agent.py          原生硬體監控、模型發現、租約與執行
+backend/app/runtimes.py        Ollama 串流、卸載確認與結果
+backend/app/mcp_server.py      共用中央 API 的 MCP 工具
+backend/migrations/           Alembic schema migrations
+backend/tests/                PostgreSQL／adapter 測試與 MCP smoke test
+scripts/                      啟動、停止、原生 Agent 安裝
 ```
 
-應用提交任務 → PostgreSQL 保存 `queued` → Agent 向中央請求工作 → 中央鎖定節點、檢查能力與工作槽、選擇任務並建立租約 → Agent 執行及回報 → GUI 定期查詢進度。
+使用 Node 22+ 可在 `frontend/` 執行 `npm ci && npm run dev -- --port 5181`，與容器 GUI 並存。Vite 將 `/api` 代理到 `127.0.0.1:8088`。
 
-第一版的排程邏輯位於 API 的 claim 交易內，無另設記憶體佇列；PostgreSQL 是唯一任務狀態來源。租約檢查在 API 背景程序執行，這版部署為單一 API instance。
+只在開發排程時需要模擬模式：設定 `ENABLE_DEMO=true` 後使用 `docker compose --profile demo up -d --build`。模擬主機與工作會明確標示 simulated；正式日常使用維持 `ENABLE_DEMO=false`。
 
-```text
-queued → running → completed / failed
-queued → cancelled
-running → cancelling → cancelled
-running / cancelling → unknown（租約逾時，不重新派送）
-unknown → 原 Agent 回報後確認狀態
-```
-
-## 應用提交任務
-
-```bash
-curl -X POST http://localhost:8088/api/jobs \
-  -H 'Content-Type: application/json' \
-  -d '{"name":"排程驗證","source":"my-app","model":"demo.progress","steps":20,"priority":0}'
-```
-
-回應包含 `id`；使用 `GET /api/jobs/{id}` 查詢進度、事件與結果。`POST /api/jobs/{id}/cancel` 取消；`POST /api/jobs/{id}/retry` 為可重試的任務建立新工作。
-
-## 接入實際主機監控
-
-在要監控的主機，使用 Python 3.12+，從此 repo 安裝依賴。取得中央 `.env` 的 `AGENT_TOKEN` 後，透過安全的環境變數或服務管理器傳入，不要加入 Git。
-
-```bash
-cd backend
-python3 -m venv .venv
-. .venv/bin/activate
-pip install -r requirements.txt
-export API_URL=http://127.0.0.1:8088
-export NODE_ID=my-gpu-host
-read -rs -p 'Agent token: ' AGENT_TOKEN
-export AGENT_TOKEN
-python -m app.agent --mode host
-```
-
-`host` 模式回報實際 CPU、RAM；若 `nvidia-smi` 可用，另回報 NVIDIA GPU 顯存、使用率、溫度及功耗。沒有 GPU 時仍能監控 CPU 與 RAM。請在主機原生執行以取得主機視角；容器中的 CPU／記憶體數據可能受 namespace 與 cgroup 影響。
-
-`host` 模式目前只有監控能力，不會接收 `demo.progress` 或其他推論工作。每台主機必須使用不同的 `NODE_ID`。同一 ID 不可同時啟動多個 Agent；Agent 重啟後未完成的舊任務可能停留在待確認狀態。
-
-遠端主機可先透過 SSH tunnel 接入中央的 loopback API，例如在遠端執行 `ssh -N -L 8088:127.0.0.1:8088 user@central-host`，再將 `API_URL` 指向遠端自身的 `http://127.0.0.1:8088`。
-
-## 開發
-
-全容器建置不依賴宿主機 Node 版本。若要前端熱更新，請使用 Node 22+：
-
-```bash
-cd frontend
-npm ci
-npm run dev
-```
-
-Vite 預設使用 5180，若 Compose GUI 已占用，可用 `npm run dev -- --port 5181`。`/api` 代理至 `127.0.0.1:8088`，可調整 `vite.config.ts`。API 使用 Alembic 管理 schema；後續修改模型時新增 migration，避免直接對正式資料執行 `create_all`。
-
-## 下一步
-
-1. 加入真實執行器 adapter（例如 vLLM HTTP API、生圖 worker 或語音程序），並提供取消與健康檢查。
-2. 在模型與部署表加入 GPU UUID、所需顯存、常駐狀態及資源預留。
-3. 加入應用 API key、逐節點認證、配額、公平排程及稽核紀錄。
-4. 將 GUI 更新改為可恢復的事件訂閱，並加入可量測的任務階段。
-
-GitHub repository：https://github.com/yankesswang/GPU-Control-Center
-
-## MCP 與排程說明
-
-五個 MCP 工具與設定方式見 [MCP 接入文件](docs/mcp.md)。使用 `make test-mcp` 驗證真實 MCP 協定與 demo-agent。GUI 的任務詳情會顯示排程說明；HTTP 可用 `GET /api/jobs/{id}/explain` 查詢工作槽持有者、主機維護／離線及能力限制。
+GitHub：https://github.com/yankesswang/GPU-Control-Center

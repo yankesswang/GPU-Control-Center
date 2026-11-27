@@ -23,6 +23,7 @@ def client(monkeypatch):
     monkeypatch.setattr(main, 'Session', sessionmaker(test_engine, expire_on_commit=False))
     monkeypatch.setattr(main, 'engine', test_engine)
     monkeypatch.setenv('AGENT_TOKEN', 'integration-test-token')
+    monkeypatch.setenv('ENABLE_DEMO', 'true')
     with TestClient(main.app) as c:
         yield c
     test_engine.dispose()
@@ -195,3 +196,33 @@ def test_explanation_without_workers_and_unknown_execution(client):
     main.reconcile()
     assert client.get(f"/api/jobs/{job['id']}/explain").json()['reason'] == 'execution_unconfirmed'
     assert client.get('/api/jobs/missing/explain').status_code == 404
+
+
+def test_real_model_catalog_input_and_partial_output(client, monkeypatch):
+    monkeypatch.setenv('ENABLE_DEMO', 'false')
+    model = dict(id='ollama:test-model', name='test-model', runtime='ollama', runtime_model='test-model', capability='ollama:test-model')
+    response = client.put('/api/agent/nodes/real-host', headers=AUTH, json={'name':'real-host', 'mode':'host', 'capabilities':[model['id']], 'model_catalog':[model], 'metrics':{'simulated':False}})
+    assert response.status_code == 200
+    assert client.get('/api/models').json()[0]['available'] is True
+    assert client.post('/api/jobs', json={'name':'missing prompt', 'model':model['id']}).status_code == 422
+    job = new_job(client, model=model['id'], prompt='Hello', max_tokens=16)
+    leased = claim(client, 'real-host')
+    assert leased['parameters'] == {'prompt':'Hello', 'max_tokens':16}
+    state = {'phase':'generating', 'text':'Actual partial output'}
+    assert report(client, leased, runtime_state=state).status_code == 200
+    assert client.get(f"/api/jobs/{job['id']}").json()['runtime_state'] == state
+    report(client, leased, status='failed', message='Upstream explicitly rejected request')
+    retried = client.post(f"/api/jobs/{job['id']}/retry").json()
+    assert retried['parameters'] == leased['parameters']
+
+
+def test_demo_disabled_and_unknown_report_retains_slot(client, monkeypatch):
+    register(client)
+    new_job(client)
+    job = claim(client)
+    report(client, job, status='unknown', message='Upstream disconnected; execution unconfirmed')
+    assert claim(client) is None
+    monkeypatch.setenv('ENABLE_DEMO', 'false')
+    assert client.get('/api/nodes').json() == []
+    assert client.get('/api/models').json() == []
+    assert client.post('/api/jobs', json={'name':'demo'}).status_code == 422

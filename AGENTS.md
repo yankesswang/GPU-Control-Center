@@ -4,7 +4,7 @@
 
 - This is the development repository for GPU Control Center.
 - Keep queue ownership and task transitions in the central API. MCP and GUI call the same API; do not create parallel task state in either client.
-- Demo metrics and demo execution must remain explicitly labeled simulated. Host telemetry does not imply a real inference adapter exists.
+- Demo metrics and demo execution must remain explicitly labeled simulated. The native host agent currently executes real Ollama jobs. Do not claim GPU placement or hard VRAM reservation; the scheduler currently grants one slot per host.
 - Use Alembic migrations for schema changes, preserving existing volumes.
 - Use `make test` for isolated PostgreSQL integration tests and `make test-mcp` for the live protocol/worker smoke test.
 - Do not commit `.env`, tokens, generated artifacts, or database data.

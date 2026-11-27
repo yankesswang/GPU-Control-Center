@@ -17,7 +17,7 @@ mcp = FastMCP(
         allowed_hosts=['localhost:*', '127.0.0.1:*', 'mcp:*'],
         allowed_origins=['http://localhost:*', 'http://127.0.0.1:*'],
     ),
-    instructions='Manage centrally scheduled GPU jobs. Only demo.progress is executable in this version; it does not run AI inference. submit_job returns immediately; use get_job and explain_wait to track progress. Never infer that an offline worker has stopped running.',
+    instructions='Manage centrally scheduled GPU jobs. Use list_resources to discover real Ollama models and select their exact id. submit_job returns immediately; use get_job and explain_wait to track output. Demo execution exists only when explicitly enabled. Never infer that an offline worker has stopped running. Running Ollama cancellation waits for a confirmed generation boundary.',
 )
 
 
@@ -43,12 +43,15 @@ async def list_resources() -> dict[str, Any]:
 @mcp.tool()
 async def submit_job(
     name: Annotated[str, Field(min_length=1, max_length=120)],
+    model: Annotated[str, Field(min_length=1, max_length=100)],
+    prompt: Annotated[str, Field(max_length=32000)] = '',
+    max_tokens: Annotated[int, Field(ge=1, le=2048)] = 256,
     source: Annotated[str, Field(min_length=1, max_length=80)] = 'mcp',
     steps: Annotated[int, Field(ge=5, le=120)] = 20,
     priority: Annotated[int, Field(ge=0, le=10)] = 0,
 ) -> dict[str, Any]:
-    """Queue a demo.progress job and return its id immediately. This simulates scheduling, not AI inference."""
-    return await request('/jobs', 'POST', dict(name=name, source=source, model='demo.progress', steps=steps, priority=priority))
+    """Queue inference on an exact model id from list_resources. Real Ollama models require a prompt. Returns immediately."""
+    return await request('/jobs', 'POST', dict(name=name, source=source, model=model, prompt=prompt, max_tokens=max_tokens, steps=steps, priority=priority))
 
 
 @mcp.tool(annotations={'readOnlyHint': True})

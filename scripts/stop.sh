@@ -1,10 +1,13 @@
 #!/usr/bin/env bash
 set -euo pipefail
 cd "$(dirname "$0")/.."
+if systemctl --user is-active --quiet gpu-control-center-agent.service 2>/dev/null; then
+  systemctl --user stop gpu-control-center-agent.service
+fi
 # Shut down from inside each container. This also works on hosts where
 # AppArmor prevents the Docker daemon from sending stop signals.
 for service in web mcp demo-agent api db; do
-  container_id=$(docker compose ps -q --status running "$service")
+  container_id=$(docker ps -q --filter label=com.docker.compose.project=gpu-control-center --filter "label=com.docker.compose.service=$service")
   [[ -n "$container_id" ]] || continue
   docker update --restart=no "$container_id" >/dev/null
   case "$service" in

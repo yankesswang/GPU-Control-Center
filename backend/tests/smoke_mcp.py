@@ -23,23 +23,27 @@ async def main():
                 return result.structuredContent
 
             resources = await call('list_resources')
-            assert resources['models'][0]['id'] == 'demo.progress'
-            job = await call('submit_job', {'name': 'MCP protocol smoke test', 'source': 'mcp-smoke', 'steps': 5})
+            model = next(m for m in resources['models'] if m.get('available'))
+            demo = model['id'] == 'demo.progress'
+            job = await call('submit_job', {'name': 'MCP inference smoke test', 'source': 'mcp-smoke', 'model': model['id'], 'prompt': '請用繁體中文說你好。', 'max_tokens': 16, 'steps': 5})
             explanation = await call('explain_wait', {'job_id': job['id']})
             assert explanation['job_id'] == job['id']
-            deadline = time.monotonic() + 45
+            deadline = time.monotonic() + 90
             while time.monotonic() < deadline:
                 saved = await call('get_job', {'job_id': job['id']})
                 if saved['status'] == 'completed':
-                    assert saved['result']['simulated'] is True
+                    assert saved['result']['simulated'] is demo
+                    if not demo:
+                        assert saved['result']['text']
+                        assert saved['result']['model_released'] is True
                     break
                 assert saved['status'] in ('queued', 'running'), saved
                 await asyncio.sleep(0.5)
             else:
-                raise AssertionError('Demo worker did not finish the MCP-created job')
-            other = await call('submit_job', {'name': 'MCP cancel smoke test', 'source': 'mcp-smoke', 'steps': 120})
+                raise AssertionError('Worker did not finish the MCP-created job')
+            other = await call('submit_job', {'name': 'MCP cancel smoke test', 'source': 'mcp-smoke', 'model': model['id'], 'prompt': 'Count from 1 to 20.', 'max_tokens': 32, 'steps': 120})
             await call('cancel_job', {'job_id': other['id']})
-            deadline = time.monotonic() + 10
+            deadline = time.monotonic() + 90
             while time.monotonic() < deadline:
                 saved = await call('get_job', {'job_id': other['id']})
                 if saved['status'] == 'cancelled':
@@ -49,7 +53,7 @@ async def main():
                 raise AssertionError('Cancellation was not acknowledged')
             invalid = await session.call_tool('get_job', {'job_id': '../nodes'})
             assert invalid.isError
-            print('MCP PASS: initialize, 5 tools, submit, explain, complete, cancel, invalid-id rejection')
+            print(f"MCP PASS ({model['id']}): initialize, 5 tools, real submit, explain, complete, cancel, invalid-id rejection")
 
 
 if __name__ == '__main__':

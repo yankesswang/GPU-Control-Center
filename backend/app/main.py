@@ -78,15 +78,27 @@ def agent_auth(x_agent_token: str = Header(default='')):
 class JobInput(BaseModel):
     name: str = Field(min_length=1, max_length=120)
     source: str = Field(default='console', min_length=1, max_length=80)
-    model: Literal['demo.progress'] = 'demo.progress'
+    model: str = Field(default='demo.progress', min_length=1, max_length=100)
     priority: int = Field(default=0, ge=0, le=10)
     steps: int = Field(default=20, ge=5, le=120)
+    prompt: str = Field(default='', max_length=32000)
+    max_tokens: int = Field(default=256, ge=1, le=2048)
+
+
+class ModelSpec(BaseModel):
+    id: str = Field(min_length=1, max_length=100)
+    name: str = Field(min_length=1, max_length=100)
+    runtime: Literal['ollama']
+    runtime_model: str = Field(min_length=1, max_length=90)
+    capability: str = Field(min_length=1, max_length=100)
+    description: str = Field(default='', max_length=500)
 
 
 class Heartbeat(BaseModel):
     name: str = Field(min_length=1, max_length=100)
     mode: Literal['demo', 'host']
-    capabilities: list[Literal['demo.progress']] = Field(default_factory=list, max_length=1)
+    capabilities: list[str] = Field(default_factory=list, max_length=200)
+    model_catalog: list[ModelSpec] = Field(default_factory=list, max_length=200)
     metrics: dict = Field(default_factory=dict)
 
 
@@ -98,9 +110,10 @@ class Report(BaseModel):
     node_id: str
     attempt_id: str
     progress: float = Field(ge=0, le=100)
-    status: Literal['running', 'completed', 'cancelled', 'failed'] = 'running'
+    status: Literal['running', 'completed', 'cancelled', 'failed', 'unknown'] = 'running'
     message: str | None = Field(default=None, max_length=2000)
     result: dict | None = None
+    runtime_state: dict | None = None
 
 
 @app.get('/health')
@@ -112,13 +125,24 @@ def health():
 
 @app.get('/api/models')
 def models():
-    return MODELS
+    with Session() as db:
+        catalog = {}
+        if os.getenv('ENABLE_DEMO', 'true').lower() == 'true':
+            catalog['demo.progress'] = {**MODELS[0], 'available': True, 'nodes': []}
+        for node in db.scalars(select(Node)):
+            for spec in node.model_catalog:
+                item = catalog.setdefault(spec['id'], {**spec, 'available': False, 'nodes': []})
+                if not node.maintenance and node.last_seen >= now() - timedelta(seconds=20) and spec['id'] in node.capabilities:
+                    item['available'] = True
+                    item['nodes'].append(node.id)
+        return list(catalog.values())
 
 
 @app.get('/api/nodes')
 def nodes():
     with Session() as db:
-        return [node_dict(n) for n in db.scalars(select(Node).order_by(Node.name))]
+        return [node_dict(n) for n in db.scalars(select(Node).order_by(Node.name))
+                if n.mode != 'demo' or os.getenv('ENABLE_DEMO', 'true').lower() == 'true']
 
 
 @app.patch('/api/nodes/{node_id}/maintenance')
@@ -135,7 +159,10 @@ def maintenance(node_id: str, body: Maintenance):
 def overview():
     with Session() as db:
         counts = dict(db.execute(select(Job.status, func.count()).group_by(Job.status)).all())
-        return {'jobs': counts, 'total': sum(counts.values()), 'online_nodes': db.scalar(select(func.count()).select_from(Node).where(Node.last_seen >= now() - timedelta(seconds=20), Node.maintenance.is_(False)))}
+        online = select(func.count()).select_from(Node).where(Node.last_seen >= now() - timedelta(seconds=20), Node.maintenance.is_(False))
+        if os.getenv('ENABLE_DEMO', 'true').lower() != 'true':
+            online = online.where(Node.mode != 'demo')
+        return {'jobs': counts, 'total': sum(counts.values()), 'online_nodes': db.scalar(online)}
 
 
 @app.get('/api/jobs')
@@ -146,8 +173,14 @@ def jobs(limit: int = 100):
 
 @app.post('/api/jobs', status_code=201)
 def create_job(body: JobInput):
+    catalog = {m['id']: m for m in models()}
+    if body.model not in catalog:
+        raise HTTPException(422, 'Unknown model; select one from /api/models')
+    if body.model != 'demo.progress' and not body.prompt.strip():
+        raise HTTPException(422, 'A prompt is required for real inference')
     with Session.begin() as db:
-        job = Job(**body.model_dump())
+        fields = body.model_dump(exclude={'prompt', 'max_tokens'})
+        job = Job(**fields, parameters={'prompt': body.prompt, 'max_tokens': body.max_tokens})
         db.add(job)
         db.flush()
         record(db, job, '任務已建立，等待符合能力的 Agent。')
@@ -195,6 +228,8 @@ def explain_wait(job_id: str):
             by_node.setdefault(running.node_id, []).append(running)
         candidates = []
         for node in db.scalars(select(Node).order_by(Node.name)):
+            if node.mode == 'demo' and os.getenv('ENABLE_DEMO', 'true').lower() != 'true':
+                continue
             blockers = []
             if job.model not in node.capabilities:
                 blockers.append('unsupported_capability')
@@ -239,7 +274,7 @@ def retry(job_id: str):
             raise HTTPException(404, 'Job not found')
         if old.status not in ('failed', 'cancelled'):
             raise HTTPException(409, 'Only confirmed failed or cancelled jobs may be retried')
-        job = Job(name=old.name, source=old.source, model=old.model, priority=old.priority, steps=old.steps)
+        job = Job(name=old.name, source=old.source, model=old.model, priority=old.priority, steps=old.steps, parameters=dict(old.parameters))
         db.add(job)
         db.flush()
         record(db, job, f'重新建立自任務 {old.id}。')
@@ -288,6 +323,8 @@ def report(job_id: str, body: Report):
             raise HTTPException(409, 'Stale or mismatched execution attempt')
         if job.status not in ACTIVE:
             return {'status': job.status, 'terminal': True}
+        if body.runtime_state is not None:
+            job.runtime_state = body.runtime_state
         if job.cancel_requested and body.status == 'running':
             job.status = 'cancelling'
             job.lease_until = now() + timedelta(seconds=30)
@@ -296,7 +333,7 @@ def report(job_id: str, body: Report):
         job.status = 'cancelled' if job.cancel_requested and body.status == 'completed' else body.status
         job.progress = max(job.progress, body.progress)
         job.lease_until = now() + timedelta(seconds=30)
-        job.error = body.message if job.status == 'failed' else None
+        job.error = body.message if job.status in ('failed', 'unknown') else None
         if job.status in ('completed', 'cancelled', 'failed'):
             job.finished_at = now()
             job.lease_until = None

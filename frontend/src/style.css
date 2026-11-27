@@ -8,3 +8,5 @@
 .drawer{margin:0 0 0 auto;border:0;max-height:none}.drawer::backdrop{background:#0f241c66}
 
 .brand{font-size:1rem;letter-spacing:-.03em}.brand-mark{font-size:.8rem}.schedule-explanation{padding:16px;background:#f3f7ef;border-radius:8px;margin-bottom:24px;font-size:.85rem;line-height:1.7}.schedule-explanation p:last-child{margin-bottom:0}.schedule-explanation>div{border-top:1px solid #dce6d8;padding-top:12px;margin-top:12px}.schedule-explanation small{display:block;color:#65766e}
+
+textarea{font:inherit;border:1px solid #cbd8d0;border-radius:6px;padding:12px;width:100%;resize:vertical;line-height:1.7}textarea:focus{outline:2px solid #278866}.generation-state{display:inline-block;font-size:.8rem;color:#357157}.generated-text{white-space:pre-wrap;overflow-wrap:anywhere;line-height:1.85;padding:18px;background:#f2f7f1;border-radius:8px;margin-bottom:24px;font-size:.95rem}.output-heading{margin-top:25px}.prompt-text{white-space:pre-wrap;overflow-wrap:anywhere;color:#65766e;font-size:.85rem;line-height:1.7;max-height:160px;overflow:auto}

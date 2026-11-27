@@ -16,6 +16,7 @@ class Node(Base):
     mode: Mapped[str] = mapped_column(String(20))
     maintenance: Mapped[bool] = mapped_column(Boolean, default=False)
     capabilities: Mapped[list] = mapped_column(JSON, default=list)
+    model_catalog: Mapped[list] = mapped_column(JSON, default=list)
     metrics: Mapped[dict] = mapped_column(JSON, default=dict)
     last_seen: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=now)
 
@@ -28,6 +29,8 @@ class Job(Base):
     model: Mapped[str] = mapped_column(String(100), default='demo.progress')
     priority: Mapped[int] = mapped_column(Integer, default=0)
     steps: Mapped[int] = mapped_column(Integer, default=20)
+    parameters: Mapped[dict] = mapped_column(JSON, default=dict)
+    runtime_state: Mapped[dict] = mapped_column(JSON, default=dict)
     status: Mapped[str] = mapped_column(String(20), default='queued', index=True)
     cancel_requested: Mapped[bool] = mapped_column(Boolean, default=False)
     progress: Mapped[float] = mapped_column(Float, default=0)

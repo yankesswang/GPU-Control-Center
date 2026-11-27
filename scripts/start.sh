@@ -13,6 +13,9 @@ PY
 fi
 docker compose up -d --build --wait --wait-timeout 180
 docker compose ps
+if systemctl --user cat gpu-control-center-agent.service >/dev/null 2>&1; then
+  systemctl --user start gpu-control-center-agent.service
+fi
 web_port=$(sed -n 's/^WEB_PORT=//p' .env)
 api_port=$(sed -n 's/^API_PORT=//p' .env)
 printf '\nGUI: http://localhost:%s\nAPI docs: http://localhost:%s/docs\n' "${web_port:-5180}" "${api_port:-8088}"
