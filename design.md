@@ -10,6 +10,10 @@ IBM Plex Sans 用於操作文字、IBM Plex Mono 用於數字與模型，中文�
 
 保留四個功能頁、API 與主機工作槽語意。硬體讀數包含其他程序，中央目前不能保證指定 GPU 或保留 VRAM。既有 style.css 保留，以 console.css 與 tokens.css 覆蓋。
 
+## Model and service controls
+
+每台主機提供 LM Studio／Ollama 預設選單並持久化；總覽用精簡模型選單與載入／卸載按鈕，模型頁保留完整清單。處理中按鈕停用並顯示狀態，不捏造載入百分比。ComfyUI 為獨立唯讀區塊，顯示連線、佇列、分類檔案與裝置資料，不將可用檔案當成常駐模型。沿用既有 token、原生 select/details 與 Phosphor 圖示。
+
 ## Runtime model inventory
 
 設備圖卡上方顯示此主機 Ollama 服務的實際常駐模型，與已安裝模型清單分開。模型名稱可斷行，顯存與載入大小以 GiB 顯示。空清單、取得失敗、舊 Agent 尚未回報、主機離線快照各自標示。

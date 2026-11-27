@@ -226,3 +226,74 @@ def test_demo_disabled_and_unknown_report_retains_slot(client, monkeypatch):
     assert client.get('/api/nodes').json() == []
     assert client.get('/api/models').json() == []
     assert client.post('/api/jobs', json={'name':'demo'}).status_code == 422
+
+
+def register_host(client, node='host', runtime='lmstudio'):
+    spec = dict(id=f'{runtime}:test', name='test', runtime=runtime, runtime_model='test', capability=f'{runtime}:test')
+    payload = {'name':node, 'mode':'host', 'capabilities':[spec['id'], f'{runtime}.model_control'], 'model_catalog':[spec],
+               'metrics':{runtime:{'loaded_models_status':'online','loaded_models':[]}}}
+    assert client.put(f'/api/agent/nodes/{node}', headers=AUTH, json=payload).status_code == 200
+    return spec
+
+
+def control(client, node='host', action='load', runtime='lmstudio'):
+    return client.post(f'/api/nodes/{node}/model-actions', json={'model':f'{runtime}:test','action':action})
+
+
+def test_runtime_preference_persists_across_heartbeat(client):
+    register_host(client)
+    assert client.get('/api/nodes').json()[0]['default_runtime'] == 'lmstudio'
+    assert client.patch('/api/nodes/host/default-runtime', json={'runtime':'ollama'}).status_code == 200
+    register_host(client)
+    assert client.get('/api/nodes').json()[0]['default_runtime'] == 'ollama'
+    assert client.patch('/api/nodes/host/default-runtime', json={'runtime':'comfyui'}).status_code == 422
+
+
+def test_model_action_targets_only_selected_host_and_shares_slot(client):
+    register_host(client, 'a')
+    register_host(client, 'b')
+    created = control(client, 'a')
+    assert created.status_code == 201, created.text
+    assert claim(client, 'b') is None
+    leased = claim(client, 'a')
+    assert leased['id'] == created.json()['id']
+    assert claim(client, 'a') is None
+    assert control(client, 'a').status_code == 409
+    assert client.post(f"/api/jobs/{leased['id']}/cancel").status_code == 409
+    report(client, leased, status='completed', result={'loaded':True})
+    assert client.get(f"/api/jobs/{leased['id']}").json()['result']['loaded']
+
+
+def test_duplicate_model_actions_are_serialized(client):
+    register_host(client)
+    with ThreadPoolExecutor(max_workers=2) as pool:
+        results = list(pool.map(lambda _: control(client).status_code, [1,2]))
+    assert sorted(results) == [201,409]
+
+
+def test_manual_ollama_residency_survives_inference_claims(client):
+    register_host(client, runtime='ollama')
+    assert control(client, runtime='ollama').status_code == 201
+    report(client, claim(client, 'host'), status='completed')
+    new_job(client, model='ollama:test', prompt='Hi')
+    inference = claim(client, 'host')
+    assert inference['keep_model_loaded'] is True
+    assert control(client, action='unload', runtime='ollama').status_code == 409
+    report(client, inference, status='completed')
+    assert control(client, action='unload', runtime='ollama').status_code == 201
+    report(client, claim(client, 'host'), status='completed')
+    new_job(client, model='ollama:test', prompt='Hi')
+    assert claim(client, 'host')['keep_model_loaded'] is False
+
+
+def test_model_action_validation_and_cancel_before_claim(client):
+    register_host(client)
+    assert client.post('/api/nodes/missing/model-actions', json={'model':'lmstudio:test','action':'load'}).status_code == 404
+    assert control(client, runtime='ollama').status_code == 409
+    assert client.post('/api/nodes/host/model-actions', json={'model':'lmstudio:missing','action':'load'}).status_code == 422
+    created = control(client).json()
+    assert client.post(f"/api/jobs/{created['id']}/cancel").json()['status'] == 'cancelled'
+    assert claim(client, 'host') is None
+    assert client.post(f"/api/jobs/{created['id']}/retry").status_code == 409
+    client.patch('/api/nodes/host/maintenance', json={'enabled':True})
+    assert control(client).status_code == 409

@@ -14,6 +14,7 @@ class Node(Base):
     id: Mapped[str] = mapped_column(String(100), primary_key=True)
     name: Mapped[str] = mapped_column(String(100))
     mode: Mapped[str] = mapped_column(String(20))
+    default_runtime: Mapped[str] = mapped_column(String(20), default='lmstudio', server_default='lmstudio')
     maintenance: Mapped[bool] = mapped_column(Boolean, default=False)
     capabilities: Mapped[list] = mapped_column(JSON, default=list)
     model_catalog: Mapped[list] = mapped_column(JSON, default=list)

@@ -1,21 +1,21 @@
 # GPU Control Center
 
-多應用共用 GPU 的中央控制平台。React 管理介面、FastAPI、PostgreSQL、MCP，以及主機原生 Agent，已接通真實 Ollama 推論。
+多應用共用 GPU 的中央控制平台。React 管理介面、FastAPI、PostgreSQL、MCP，以及主機原生 Agent，已接通真實 LM Studio／Ollama 推論，以及 ComfyUI 唯讀監控。
 
 ## 已可使用
 
 - 主機實際 CPU、RAM、NVIDIA GPU 使用率／顯存／溫度／功耗。
-- 自動發現 Ollama 已安裝模型，從 GUI、HTTP API 或 MCP 提交提示詞。
+- 自動發現 LM Studio／Ollama 已安裝模型，從 GUI、HTTP API 或 MCP 提交提示詞。
 - 持久化排程、文字逐步更新、最終 token 數／速度與執行結果。
 - 優先級與等待時間排序、維護模式、等待原因及工作槽持有者查詢。
 - 取消排隊工作；執行中的 Ollama 工作等待確認生成結束與卸載後取消。
 - 網路中斷或執行狀態不確定時，保留工作槽，不自動重新派送。
 
-預設不啟動模擬 Agent。模型由你現有的 Ollama 執行，不會重新部署 Ollama 或搬動模型目錄。
+預設不啟動模擬 Agent。模型由你現有的 LM Studio 或 Ollama 執行，不會重新部署執行器或搬動模型目錄。
 
 ## 安裝與啟動
 
-需求：Docker、Docker Compose v2+、Python 3、[uv](https://docs.astral.sh/uv/)、Linux systemd user session，以及可連線的 Ollama。主機不用安裝 Node；前端在 Docker 的 Node 22 中建置。
+需求：Docker、Docker Compose v2+、Python 3、[uv](https://docs.astral.sh/uv/)、Linux systemd user session，以及可連線的 LM Studio 或 Ollama。主機不用安裝 Node；前端在 Docker 的 Node 22 中建置。
 
 ```bash
 git clone https://github.com/yankesswang/GPU-Control-Center.git
@@ -48,6 +48,26 @@ OLLAMA_URL=http://127.0.0.1:11434
 | 健康檢查 | http://localhost:8088/health |
 | MCP | http://localhost:8090/mcp（Streamable HTTP） |
 | PostgreSQL | localhost:5440，帳密見本機 `.env` |
+
+## 選擇執行器與管理模型
+
+在「模型與能力」或主機硬體區選擇「預設執行器」：LM Studio 或 Ollama。偏好儲存在 PostgreSQL，每台主機各自設定；推論表單優先顯示第一台主機偏好的文字模型。此設定不會停止另一個服務。
+
+```dotenv
+LMSTUDIO_URL=http://127.0.0.1:1234
+COMFYUI_URL=http://127.0.0.1:8188
+# LMSTUDIO_API_TOKEN=若 LM Studio 開啟認證，於本機 .env 設定
+```
+
+位址是原生 Agent 所在主機看到的位址；修改後重啟 Agent。LM Studio 需要支援原生 `/api/v1/models`、`/api/v1/models/load`、`/api/v1/models/unload` 的版本。UI 可載入／卸載 LLM 和 embedding；文字推論只接受 LLM。卸載會移除所選模型的所有已載入實例，其他模型不受影響。LM Studio 的自動卸載／auto-evict 設定仍由該服務控制；平台不偽造它沒有提供的每模型顯存大小。
+
+```text
+PATCH /api/nodes/{node_id}/default-runtime   {"runtime":"lmstudio"}
+POST /api/nodes/{node_id}/model-actions      {"model":"lmstudio:model-key","action":"load"}
+POST /api/nodes/{node_id}/model-actions      {"model":"lmstudio:model-key","action":"unload"}
+```
+
+ComfyUI 區塊唯讀顯示連線、版本、佇列數與 prompt ID、分類模型檔案，以及服務回報的裝置顯存。使用 GET `/system_stats`、`/queue`、`/models`、`/models/{folder}`，不提交／取消工作流或卸載模型。檔案清單不代表模型常駐狀態；每分類最多顯示 200 筆、最多讀取 32 類，超限或讀取失敗會標記。
 
 ## 開始推論
 
@@ -90,9 +110,11 @@ docker compose logs -f --tail=100
 
 目前每個主機只有一個受管理的工作槽，即使有多張 GPU 也會序列化本平台的請求。Ollama 自己選擇 GPU；這版尚未提供每卡放置或顯存硬性預留。主機圖表是整台主機的數據，包含其他程序。
 
+LM Studio／Ollama 的模型載入與卸載也會建立中央任務，使用同一個主機工作槽。只有指定主機能領取操作；執行中的操作必須等待服務確認，不能強行取消。
+
 本平台只協調經過中央 API 的請求。其他應用若直接打 Ollama 或 ComfyUI，仍可能競爭 GPU。尚未接通 ComfyUI 執行器，不會停止既有 ComfyUI 工作或任意卸載其他服務。
 
-每次 Ollama 請求使用 `keep_alive=0`，完成後檢查 `/api/ps`，確認本次模型不再常駐後才釋放工作槽。若模型仍被其他 client 使用、連線中斷或收不到 done，任務會進入 `unknown`；保留工作槽等待人工確認，不會把不確定的執行當作已停止。
+Ollama 預設請求使用 `keep_alive=0`；經 UI 手動載入的模型，後續推論使用 `keep_alive=-1`，直到 UI 手動卸載。偏好由中央已完成操作紀錄決定，Agent 重啟後仍有效。每次生成後都檢查 `/api/ps`，確認常駐狀態符合要求後才釋放工作槽。若模型仍被其他 client 使用、連線中斷或收不到 done，任務會進入 `unknown`；保留工作槽等待人工確認，不會把不確定的執行當作已停止。
 
 執行中取消是「等待本次生成結束並確認卸載」，不是任意中斷 GPU kernel。最大生成長度 2048 tokens，context 設為 2048；長提示詞可能受 Ollama context 限制。
 
@@ -106,7 +128,8 @@ docker compose logs -f --tail=100
 frontend/                     React + TypeScript + Vite，Nginx 同源代理
 backend/app/main.py           中央排程、任務狀態、Agent API、等待說明
 backend/app/agent.py          原生硬體監控、模型發現、租約與執行
-backend/app/runtimes.py        Ollama 串流、卸載確認與結果
+backend/app/runtimes.py        Ollama 串流、模型控制與常駐確認
+backend/app/services.py        LM Studio 推論／模型控制、ComfyUI 唯讀快照
 backend/app/mcp_server.py      共用中央 API 的 MCP 工具
 backend/migrations/           Alembic schema migrations
 backend/tests/                PostgreSQL／adapter 測試與 MCP smoke test

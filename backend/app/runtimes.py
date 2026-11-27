@@ -18,7 +18,7 @@ def discover_ollama(client):
         if len(name) > 90:
             continue
         specs.append(dict(id='ollama:' + name, name=name, runtime='ollama', runtime_model=name,
-                          capability='ollama:' + name, description='真實 Ollama 本機推論；完成後卸載本次模型。'))
+                          capability='ollama:' + name, description='真實 Ollama 推論；手動載入的模型會保持常駐，直到卸載。'))
     return specs
 
 
@@ -46,9 +46,41 @@ def resident_ollama(client):
         return {'loaded_models_status': 'unavailable', 'loaded_models': None}
 
 
+def control_ollama(client, job, report):
+    model = job['model'].removeprefix('ollama:')
+    action = job['parameters']['model_action']
+    ack = report(status='running', runtime_state={'phase': action}, message=f'正在向 Ollama 提交模型{action}。')
+    if ack.get('status') == 'cancelling':
+        report(status='cancelled', message='模型操作尚未送出，已取消。')
+        return
+    try:
+        response = client.post('/api/chat', json={'model': model, 'messages': [], 'stream': False, 'keep_alive': -1 if action == 'load' else 0}, timeout=180)
+        response.raise_for_status()
+        payload = response.json()
+        if payload.get('error'):
+            raise RuntimeError(payload['error'])
+        if not payload.get('done'):
+            raise ExecutionUncertain('模型操作未取得完成確認；保留主機工作槽。')
+        for _ in range(20):
+            inventory = resident_ollama(client)
+            if inventory['loaded_models_status'] != 'online':
+                raise ExecutionUncertain('無法確認模型載入狀態；保留主機工作槽。')
+            loaded = any(m['name'] == model for m in inventory['loaded_models'])
+            if loaded == (action == 'load'):
+                report(status='completed', progress=100, runtime_state={'phase': 'completed'},
+                       message=f"模型已{'載入並保持常駐' if loaded else '卸載'}。",
+                       result={'runtime': 'ollama', 'model': model, 'model_action': action, 'loaded': loaded})
+                return
+            time.sleep(.5)
+        raise ExecutionUncertain('Ollama 已回應，但模型常駐狀態尚未符合操作；保留主機工作槽。')
+    except (httpx.RequestError, ValueError) as exc:
+        raise ExecutionUncertain('模型操作連線中斷，無法確認是否完成。') from exc
+
+
 def generate_ollama(client, job, report):
     model = job['model'].removeprefix('ollama:')
     parameters = job.get('parameters', {})
+    keep_loaded = job.get('keep_model_loaded', False)
     state = {'phase': 'loading', 'text': '', 'thinking': '', 'tokens_generated': 0}
     response = report(status='running', runtime_state=state, message='正在連線 Ollama 並載入模型。')
     if response.get('status') == 'cancelling':
@@ -63,7 +95,7 @@ def generate_ollama(client, job, report):
     try:
         with client.stream('POST', '/api/chat', json={
             'model': model, 'messages': [{'role': 'user', 'content': parameters['prompt']}],
-            'stream': True, 'keep_alive': 0,
+            'stream': True, 'keep_alive': -1 if keep_loaded else 0,
             'options': {'num_predict': parameters.get('max_tokens', 256), 'num_ctx': 2048},
         }) as stream:
             stream.raise_for_status()
@@ -104,20 +136,21 @@ def generate_ollama(client, job, report):
         raise ExecutionUncertain('Ollama 連線中斷，無法確認遠端推論是否停止。') from exc
     if final is None:
         raise ExecutionUncertain('Ollama 串流結束但沒有 done 確認。')
-    # keep_alive=0 requests unloading, but only the model inventory confirms it.
+    # Confirm either release or user-requested residency before releasing the slot.
     released = False
     try:
         for _ in range(20):
             resident = client.get('/api/ps')
             resident.raise_for_status()
-            if not any(m.get('name') == model or m.get('model') == model for m in resident.json().get('models', [])):
+            loaded = any(m.get('name') == model or m.get('model') == model for m in resident.json().get('models', []))
+            if loaded == keep_loaded:
                 released = True
                 break
             time.sleep(0.5)
     except (httpx.HTTPError, ValueError) as exc:
-        raise ExecutionUncertain('生成已結束，但無法確認 Ollama 模型已卸載。') from exc
+        raise ExecutionUncertain('生成已結束，但無法確認 Ollama 模型常駐狀態。') from exc
     if not released:
-        raise ExecutionUncertain('生成已結束，但模型仍常駐；保留工作槽等待人工確認。')
+        raise ExecutionUncertain('生成已結束，但模型常駐狀態不符；保留工作槽等待人工確認。')
     # The central API also resolves a cancellation racing with this final report.
     tokens = final.get('eval_count', 0)
     state = dict(phase='completed', text=text, thinking=thinking, tokens_generated=tokens, gpu_memory_bytes=gpu_memory_bytes)
@@ -131,6 +164,6 @@ def generate_ollama(client, job, report):
                    'thinking': thinking, 'tokens_generated': tokens,
                    'tokens_per_second': round(tokens / duration, 2) if duration else None,
                    'gpu_memory_bytes': gpu_memory_bytes,
-                   'model_released': True,
+                   'model_released': not keep_loaded,
                    'total_duration_ms': round(final.get('total_duration', 0) / 1e6, 2),
                })

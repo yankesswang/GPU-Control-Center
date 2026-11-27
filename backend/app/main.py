@@ -8,7 +8,7 @@ from uuid import uuid4
 
 from fastapi import Depends, FastAPI, Header, HTTPException
 from pydantic import BaseModel, Field
-from sqlalchemy import func, inspect, select, text
+from sqlalchemy import and_, or_, func, inspect, select, text
 from sqlalchemy.dialects.postgresql import insert
 from .db import Session, engine
 from .models import Event, Job, Node, now
@@ -88,7 +88,8 @@ class JobInput(BaseModel):
 class ModelSpec(BaseModel):
     id: str = Field(min_length=1, max_length=100)
     name: str = Field(min_length=1, max_length=100)
-    runtime: Literal['ollama']
+    runtime: Literal['ollama', 'lmstudio']
+    model_type: str = Field(default='llm', max_length=30)
     runtime_model: str = Field(min_length=1, max_length=90)
     capability: str = Field(min_length=1, max_length=100)
     description: str = Field(default='', max_length=500)
@@ -104,6 +105,15 @@ class Heartbeat(BaseModel):
 
 class Maintenance(BaseModel):
     enabled: bool
+
+
+class RuntimePreference(BaseModel):
+    runtime: Literal['lmstudio', 'ollama']
+
+
+class ModelAction(BaseModel):
+    model: str = Field(min_length=1, max_length=100)
+    action: Literal['load', 'unload']
 
 
 class Report(BaseModel):
@@ -155,6 +165,16 @@ def maintenance(node_id: str, body: Maintenance):
         return node_dict(node)
 
 
+@app.patch('/api/nodes/{node_id}/default-runtime')
+def default_runtime(node_id: str, body: RuntimePreference):
+    with Session.begin() as db:
+        node = db.get(Node, node_id, with_for_update=True)
+        if not node:
+            raise HTTPException(404, 'Node not found')
+        node.default_runtime = body.runtime
+        return node_dict(node)
+
+
 @app.get('/api/overview')
 def overview():
     with Session() as db:
@@ -163,6 +183,38 @@ def overview():
         if os.getenv('ENABLE_DEMO', 'true').lower() != 'true':
             online = online.where(Node.mode != 'demo')
         return {'jobs': counts, 'total': sum(counts.values()), 'online_nodes': db.scalar(online)}
+
+
+@app.post('/api/nodes/{node_id}/model-actions', status_code=201)
+def model_action(node_id: str, body: ModelAction):
+    with Session.begin() as db:
+        node = db.get(Node, node_id, with_for_update=True)
+        if not node:
+            raise HTTPException(404, 'Node not found')
+        provider = body.model.split(':', 1)[0]
+        if provider not in ('ollama', 'lmstudio'):
+            raise HTTPException(422, 'Unsupported runtime')
+        if node.mode != 'host' or provider + '.model_control' not in node.capabilities:
+            raise HTTPException(409, '請更新主機 Agent 以支援模型載入與卸載。')
+        if node.maintenance or node.last_seen < now() - timedelta(seconds=20):
+            raise HTTPException(409, '主機目前離線或停止接單，無法操作模型。')
+        if node.metrics.get(provider, {}).get('loaded_models_status') != 'online':
+            raise HTTPException(409, '尚未取得執行器狀態，請等待 Agent 更新。')
+        loaded = node.metrics.get(provider, {}).get('loaded_models') or []
+        installed = {m['id'] for m in node.model_catalog}
+        resident = {provider + ':' + m['name'] for m in loaded}
+        if body.model not in (installed if body.action == 'load' else installed | resident):
+            raise HTTPException(422, '請選擇此主機已安裝或已載入的模型。')
+        pending = db.scalars(select(Job).where(or_(Job.node_id == node_id, Job.parameters['target_node_id'].as_string() == node_id), Job.status.in_(('queued', *ACTIVE)))).all()
+        if any(j.status in ACTIVE or j.parameters.get('model_action') for j in pending):
+            raise HTTPException(409, '主機有執行中或待確認的工作，請等待完成後操作模型。')
+        job = Job(name=f"{'載入' if body.action == 'load' else '卸載'} {body.model.split(':', 1)[1]}",
+                  source='model-control', model=body.model, priority=10,
+                  parameters={'model_action': body.action, 'target_node_id': node_id})
+        db.add(job)
+        db.flush()
+        record(db, job, f'已請求模型{body.action}，等待指定主機 Agent。')
+        return encode(job)
 
 
 @app.get('/api/jobs')
@@ -176,6 +228,8 @@ def create_job(body: JobInput):
     catalog = {m['id']: m for m in models()}
     if body.model not in catalog:
         raise HTTPException(422, 'Unknown model; select one from /api/models')
+    if catalog[body.model].get('model_type', 'llm') != 'llm':
+        raise HTTPException(422, '此模型不支援文字推論，僅提供載入與卸載。')
     if body.model != 'demo.progress' and not body.prompt.strip():
         raise HTTPException(422, 'A prompt is required for real inference')
     with Session.begin() as db:
@@ -208,6 +262,8 @@ def cancel(job_id: str):
             job.finished_at = now()
             record(db, job, '已取消排隊任務。')
         elif job.status in ('running', 'unknown'):
+            if job.parameters.get('model_action'):
+                raise HTTPException(409, '模型操作已送出，必須等待執行器確認完成。')
             job.cancel_requested = True
             job.status = 'cancelling'
             record(db, job, '已請求取消，等待 Agent 確認停止。')
@@ -233,6 +289,10 @@ def explain_wait(job_id: str):
             blockers = []
             if job.model not in node.capabilities:
                 blockers.append('unsupported_capability')
+            if job.parameters.get('model_action') and job.model.split(':', 1)[0] + '.model_control' in node.capabilities:
+                blockers = [b for b in blockers if b != 'unsupported_capability']
+            if job.parameters.get('target_node_id') not in (None, node.id):
+                blockers.append('different_target_node')
             if node.last_seen < now() - timedelta(seconds=20):
                 blockers.append('offline')
             if node.maintenance:
@@ -274,6 +334,8 @@ def retry(job_id: str):
             raise HTTPException(404, 'Job not found')
         if old.status not in ('failed', 'cancelled'):
             raise HTTPException(409, 'Only confirmed failed or cancelled jobs may be retried')
+        if old.parameters.get('model_action'):
+            raise HTTPException(409, '請從模型管理重新提交操作，以重新檢查主機狀態。')
         job = Job(name=old.name, source=old.source, model=old.model, priority=old.priority, steps=old.steps, parameters=dict(old.parameters))
         db.add(job)
         db.flush()
@@ -301,7 +363,10 @@ def claim(node_id: str):
         if db.scalar(select(Job.id).where(Job.node_id == node_id, Job.status.in_(ACTIVE)).limit(1)):
             return {'job': None}
         # Priority aging: every 30 seconds of waiting adds one effective priority.
-        job = db.scalar(select(Job).where(Job.status == 'queued', Job.model.in_(node.capabilities)).order_by(*queue_order()).with_for_update(skip_locked=True).limit(1))
+        compatible = and_(Job.parameters['model_action'].as_string().is_(None), Job.model.in_(node.capabilities))
+        if any(p + '.model_control' in node.capabilities for p in ('ollama', 'lmstudio')):
+            compatible = or_(compatible, and_(Job.parameters['target_node_id'].as_string() == node_id, Job.parameters['model_action'].as_string().in_(('load', 'unload'))))
+        job = db.scalar(select(Job).where(Job.status == 'queued', compatible).order_by(*queue_order()).with_for_update(skip_locked=True).limit(1))
         if not job:
             return {'job': None}
         job.status = 'running'
@@ -310,7 +375,11 @@ def claim(node_id: str):
         job.started_at = now()
         job.lease_until = now() + timedelta(seconds=30)
         record(db, job, f'已派送至 {node.name}，建立獨立執行租約。')
-        return {'job': encode(job)}
+        data = encode(job)
+        if not job.parameters.get('model_action'):
+            last_control = db.scalar(select(Job).where(Job.node_id == node_id, Job.model == job.model, Job.status == 'completed', Job.parameters['model_action'].as_string().in_(('load', 'unload'))).order_by(Job.finished_at.desc(), Job.id).limit(1))
+            data['keep_model_loaded'] = bool(last_control and last_control.parameters['model_action'] == 'load')
+        return {'job': data}
 
 
 @app.post('/api/agent/jobs/{job_id}/report', dependencies=[Depends(agent_auth)])

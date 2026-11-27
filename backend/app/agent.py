@@ -1,4 +1,6 @@
 """Native host telemetry and real Ollama execution; demo is opt-in."""
+from contextlib import ExitStack
+from concurrent.futures import ThreadPoolExecutor
 import argparse
 import logging
 import os
@@ -9,7 +11,8 @@ import time
 
 import httpx
 import psutil
-from .runtimes import discover_ollama, resident_ollama, generate_ollama, ExecutionUncertain
+from .runtimes import discover_ollama, resident_ollama, control_ollama, generate_ollama, ExecutionUncertain
+from .services import lmstudio_inventory, control_lmstudio, generate_lmstudio, comfyui_snapshot
 
 logging.basicConfig(level=logging.INFO, format='%(asctime)s %(levelname)s %(message)s')
 log = logging.getLogger('agent')
@@ -46,8 +49,29 @@ def main():
     stop = threading.Event()
     ollama_url = os.getenv('OLLAMA_URL', 'http://127.0.0.1:11434').rstrip('/')
 
+    lmstudio_url = os.getenv('LMSTUDIO_URL', 'http://127.0.0.1:1234').rstrip('/')
+    comfyui_url = os.getenv('COMFYUI_URL', 'http://127.0.0.1:8188').rstrip('/')
+    lm_headers = {'Authorization': 'Bearer ' + os.environ['LMSTUDIO_API_TOKEN']} if os.getenv('LMSTUDIO_API_TOKEN') else {}
+
     def heartbeat_loop():
-        with httpx.Client(base_url=api, headers=headers, timeout=10) as central, httpx.Client(base_url=ollama_url, timeout=5) as runtime:
+        with ExitStack() as stack:
+            central = stack.enter_context(httpx.Client(base_url=api, headers=headers, timeout=10))
+            runtime = stack.enter_context(httpx.Client(base_url=ollama_url, timeout=3))
+            studio = stack.enter_context(httpx.Client(base_url=lmstudio_url, headers=lm_headers, timeout=3))
+            comfy = stack.enter_context(httpx.Client(base_url=comfyui_url, timeout=2))
+            pool = stack.enter_context(ThreadPoolExecutor(max_workers=3))
+            def ollama_info():
+                try:
+                    specs = discover_ollama(runtime)
+                    info = {'status': 'online', 'models': len(specs), **resident_ollama(runtime)}
+                    return specs, info
+                except (httpx.HTTPError, ValueError, KeyError):
+                    return [], {'status': 'offline', 'models': 0, 'loaded_models_status': 'unavailable', 'loaded_models': None}
+            def studio_info():
+                try:
+                    return lmstudio_inventory(studio)
+                except (httpx.HTTPError, ValueError, KeyError, TypeError):
+                    return [], {'status': 'offline', 'models': 0, 'loaded_models_status': 'unavailable', 'loaded_models': None}
             while not stop.is_set():
                 try:
                     catalog = []
@@ -56,13 +80,14 @@ def main():
                         capabilities = ['demo.progress']
                     else:
                         metrics = host_metrics()
-                        try:
-                            catalog = discover_ollama(runtime)
-                            metrics['ollama'] = {'status': 'online', 'models': len(catalog)}
-                        except (httpx.HTTPError, ValueError, KeyError):
-                            metrics['ollama'] = {'status': 'offline', 'models': 0}
-                        metrics['ollama'].update(resident_ollama(runtime))
-                        capabilities = [m['id'] for m in catalog]
+                        ollama_future = pool.submit(ollama_info)
+                        studio_future = pool.submit(studio_info)
+                        comfy_future = pool.submit(comfyui_snapshot, comfy)
+                        ollama_catalog, metrics['ollama'] = ollama_future.result()
+                        studio_catalog, metrics['lmstudio'] = studio_future.result()
+                        metrics['comfyui'] = comfy_future.result()
+                        catalog = ollama_catalog + studio_catalog
+                        capabilities = [m['id'] for m in catalog if m.get('model_type', 'llm') == 'llm'] + ['ollama.model_control', 'lmstudio.model_control']
                     central.put(f'/api/agent/nodes/{node_id}', json={'name': node_id, 'mode': args.mode, 'capabilities': capabilities, 'model_catalog': catalog, 'metrics': metrics}).raise_for_status()
                 except Exception as exc:
                     log.warning('Heartbeat failed: %s', type(exc).__name__)
@@ -122,7 +147,16 @@ def main():
                                 report(status='completed', progress=100, message='模擬任務完成。', result={'simulated':True, 'steps':job['steps']})
                         elif args.mode == 'host' and job['model'].startswith('ollama:'):
                             with httpx.Client(base_url=ollama_url, timeout=httpx.Timeout(30, connect=5)) as runtime:
-                                generate_ollama(runtime, job, report)
+                                if job.get('parameters', {}).get('model_action'):
+                                    control_ollama(runtime, job, report)
+                                else:
+                                    generate_ollama(runtime, job, report)
+                        elif args.mode == 'host' and job['model'].startswith('lmstudio:'):
+                            with httpx.Client(base_url=lmstudio_url, headers=lm_headers, timeout=httpx.Timeout(180, connect=5)) as studio:
+                                if job.get('parameters', {}).get('model_action'):
+                                    control_lmstudio(studio, job, report)
+                                else:
+                                    generate_lmstudio(studio, job, report)
                         else:
                             report(status='failed', message='Agent 不支援此執行器。')
                     except ExecutionUncertain as exc:
